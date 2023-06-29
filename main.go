@@ -1,0 +1,37 @@
+package main
+
+import (
+	"bitbot/bot"
+	"github.com/charmbracelet/log"
+	"github.com/joho/godotenv"
+	"os"
+)
+
+func init() {
+	if err := godotenv.Load(); err != nil {
+		log.Fatal("no .env file found")
+	}
+
+}
+
+func main() {
+	botToken, ok := os.LookupEnv("BOT_TOKEN")
+	if !ok {
+		log.Fatal("Must set Discord token asn env variable: BOT_TOKEN")
+
+	}
+	cryptoToken, ok := os.LookupEnv("CRYPTO_TOKEN")
+	if !ok {
+		log.Fatal("Must set crypto token as env variable: CRYPTO_TOKEN")
+	}
+	openAIToken, ok := os.LookupEnv("OPENAI_TOKEN")
+	if !ok {
+		log.Fatal("Must set OpenAI token as env variable: OPENAI_TOKEN")
+	}
+
+	bot.BotToken = botToken
+	bot.CryptoToken = cryptoToken
+	bot.OpenAIToken = openAIToken
+
+	bot.Run()
+}
