@@ -38,9 +38,11 @@ func Run() {
 var conversationHistoryMap = make(map[string][]openai.ChatCompletionMessage)
 
 func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
-	if message.Author.ID == discord.State.User.ID {
+	if message.Author.ID == discord.State.User.ID || message.Content == "" {
 		return
 	}
+
+	isPrivateChannel := message.GuildID == ""
 
 	conversationHistory := conversationHistoryMap[message.Author.ID]
 
@@ -50,8 +52,7 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 	}
 	conversationHistory = append(conversationHistory, userMessage)
 
-	switch {
-	case strings.Contains(message.Content, "!bit"):
+	if strings.Contains(message.Content, "!bit") || isPrivateChannel {
 		gptResponse := chatGPT(message.Content, conversationHistory)
 		discord.ChannelTyping(message.ChannelID)
 		discord.ChannelMessageSendComplex(message.ChannelID, gptResponse)
@@ -61,7 +62,7 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 			Content: gptResponse.Content,
 		}
 		conversationHistory = append(conversationHistory, botMessage)
-	case strings.Contains(message.Content, "!cry"):
+	} else if strings.Contains(message.Content, "!cry") {
 		currentCryptoPrice := getCurrentCryptoPrice(message.Content)
 		discord.ChannelMessageSendComplex(message.ChannelID, currentCryptoPrice)
 	}

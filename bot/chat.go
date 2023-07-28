@@ -8,7 +8,7 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 )
 
-const maxTokens = 2000
+const maxTokens = 3000
 const maxContextTokens = 4097
 
 func chatGPT(message string, conversationHistory []openai.ChatCompletionMessage) *discordgo.MessageSend {
@@ -17,7 +17,7 @@ func chatGPT(message string, conversationHistory []openai.ChatCompletionMessage)
 	// Calculate the total number of tokens used in the conversation history and completion.
 	totalTokens := 0
 	for _, msg := range conversationHistory {
-		totalTokens += len(msg.Content)
+		totalTokens += len(msg.Content) + len(msg.Role) + 2 // Account for role and content tokens, plus two extra for delimiters.
 	}
 
 	// Calculate the number of tokens used in the completion.
@@ -31,19 +31,26 @@ func chatGPT(message string, conversationHistory []openai.ChatCompletionMessage)
 			completionTokens = maxTokens
 		} else {
 			// If removing the last message reduces the context within the limit, remove it.
-			if totalTokens-len(conversationHistory[len(conversationHistory)-1].Content) <= maxTokens {
-				totalTokens -= len(conversationHistory[len(conversationHistory)-1].Content)
+			if totalTokens-len(conversationHistory[len(conversationHistory)-1].Content)-len(conversationHistory[len(conversationHistory)-1].Role)-2 <= maxTokens {
+				totalTokens -= len(conversationHistory[len(conversationHistory)-1].Content) + len(conversationHistory[len(conversationHistory)-1].Role) + 2
 				conversationHistory = conversationHistory[:len(conversationHistory)-1]
 			} else {
 				// Otherwise, remove the first message from the conversation history.
-				totalTokens -= len(conversationHistory[0].Content)
+				totalTokens -= len(conversationHistory[0].Content) + len(conversationHistory[0].Role) + 2
 				conversationHistory = conversationHistory[1:]
 			}
 		}
 	}
 
-	// Combine the previous conversation history with the current user message.
-	messages := append(conversationHistory, openai.ChatCompletionMessage{
+	// Add a system message at the beginning of the conversation history with the instructions.
+	systemMessage := openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleSystem,
+		Content: "1. Identify the key points or main ideas of the original answers.\n2. Summarize each answer using concise and informative language.\n3. Prioritize clarity and brevity, capturing the essence of the information provided.\n4. Trim down unnecessary details and avoid elaboration.\n5. Make sure the summarized answers still convey accurate and meaningful information.",
+	}
+
+	// Combine the system message, previous conversation history, and the current user message.
+	messages := append([]openai.ChatCompletionMessage{systemMessage}, conversationHistory...)
+	messages = append(messages, openai.ChatCompletionMessage{
 		Role:    openai.ChatMessageRoleUser,
 		Content: message,
 	})
