@@ -2,11 +2,13 @@ package bot
 
 import (
 	"bitbot/pb"
-	"github.com/bwmarrin/discordgo"
-	"github.com/charmbracelet/log"
 	"os"
 	"os/signal"
 	"strings"
+
+	"github.com/bwmarrin/discordgo"
+	"github.com/charmbracelet/log"
+	openai "github.com/sashabaranov/go-openai"
 )
 
 var (
@@ -33,19 +35,36 @@ func Run() {
 	<-c
 }
 
+var conversationHistoryMap = make(map[string][]openai.ChatCompletionMessage)
+
 func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 	if message.Author.ID == discord.State.User.ID {
 		return
 	}
 
+	conversationHistory := conversationHistoryMap[message.Author.ID]
+
+	userMessage := openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleUser,
+		Content: message.Content,
+	}
+	conversationHistory = append(conversationHistory, userMessage)
+
 	switch {
 	case strings.Contains(message.Content, "!bit"):
-		gptResponse := chatGPT(message.Content)
+		gptResponse := chatGPT(message.Content, conversationHistory)
 		discord.ChannelTyping(message.ChannelID)
 		discord.ChannelMessageSendComplex(message.ChannelID, gptResponse)
+
+		botMessage := openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleSystem,
+			Content: gptResponse.Content,
+		}
+		conversationHistory = append(conversationHistory, botMessage)
 	case strings.Contains(message.Content, "!cry"):
 		currentCryptoPrice := getCurrentCryptoPrice(message.Content)
 		discord.ChannelMessageSendComplex(message.ChannelID, currentCryptoPrice)
 	}
 
+	conversationHistoryMap[message.Author.ID] = conversationHistory
 }
