@@ -1,20 +1,19 @@
 package bot
 
 import (
-	"bitbot/pb"
 	"os"
 	"os/signal"
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/charmbracelet/log"
-	openai "github.com/sashabaranov/go-openai"
+	"github.com/sashabaranov/go-openai"
 )
 
 var (
-	CryptoToken string
 	BotToken    string
 	OpenAIToken string
+	CryptoToken string
 )
 
 func Run() {
@@ -28,7 +27,6 @@ func Run() {
 	discord.Open()
 	defer discord.Close()
 	log.Info("BitBot is running...")
-	pb.Run()
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
@@ -44,16 +42,21 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 
 	isPrivateChannel := message.GuildID == ""
 
-	conversationHistory := conversationHistoryMap[message.Author.ID]
+	userID := message.Author.ID
+	conversationHistory := conversationHistoryMap[userID]
+
+	channelID := message.ChannelID
+	conversationHistory = populateConversationHistory(discord, channelID, conversationHistory)
 
 	userMessage := openai.ChatCompletionMessage{
 		Role:    openai.ChatMessageRoleUser,
 		Content: message.Content,
 	}
+
 	conversationHistory = append(conversationHistory, userMessage)
 
 	if strings.Contains(message.Content, "!bit") || isPrivateChannel {
-		gptResponse := chatGPT(message.Content, conversationHistory)
+		gptResponse := chatGPT(discord, message.ChannelID, message.Content, conversationHistory)
 		discord.ChannelTyping(message.ChannelID)
 		discord.ChannelMessageSendComplex(message.ChannelID, gptResponse)
 
@@ -67,5 +70,5 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 		discord.ChannelMessageSendComplex(message.ChannelID, currentCryptoPrice)
 	}
 
-	conversationHistoryMap[message.Author.ID] = conversationHistory
+	conversationHistoryMap[userID] = conversationHistory
 }
