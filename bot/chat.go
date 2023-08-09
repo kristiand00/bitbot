@@ -8,53 +8,125 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 )
 
-const maxTokens = 3000
-const maxContextTokens = 4097
+const (
+	maxTokens         = 3000
+	maxContextTokens  = 4097
+	maxMessageTokens  = 1000
+	systemMessageText = "1. Identify the key points or main ideas of the original answers.\n2. Summarize each answer using concise and informative language.\n3. Prioritize clarity and brevity, capturing the essence of the information provided.\n4. Trim down unnecessary details and avoid elaboration.\n5. Make sure the summarized answers still convey accurate and meaningful information."
+)
 
-func chatGPT(message string, conversationHistory []openai.ChatCompletionMessage) *discordgo.MessageSend {
-	client := openai.NewClient(OpenAIToken)
-
-	// Calculate the total number of tokens used in the conversation history and completion.
-	totalTokens := 0
-	for _, msg := range conversationHistory {
-		totalTokens += len(msg.Content) + len(msg.Role) + 2 // Account for role and content tokens, plus two extra for delimiters.
+func populateConversationHistory(session *discordgo.Session, channelID string, conversationHistory []openai.ChatCompletionMessage) []openai.ChatCompletionMessage {
+	messages, err := session.ChannelMessages(channelID, 100, "", "", "")
+	if err != nil {
+		log.Error("Error retrieving channel history:", err)
+		return conversationHistory
 	}
 
-	// Calculate the number of tokens used in the completion.
-	completionTokens := len(message)
+	totalTokens := 0
+	for _, msg := range conversationHistory {
+		totalTokens += len(msg.Content) + len(msg.Role) + 2
+	}
 
-	// If the total tokens (context + completion) exceed the maxTokens limit, truncate the completion first.
-	for totalTokens+completionTokens > maxTokens {
-		// Remove tokens from the beginning of the completion message.
-		if completionTokens > maxTokens {
-			message = message[:maxTokens]
-			completionTokens = maxTokens
-		} else {
-			// If removing the last message reduces the context within the limit, remove it.
-			if totalTokens-len(conversationHistory[len(conversationHistory)-1].Content)-len(conversationHistory[len(conversationHistory)-1].Role)-2 <= maxTokens {
-				totalTokens -= len(conversationHistory[len(conversationHistory)-1].Content) + len(conversationHistory[len(conversationHistory)-1].Role) + 2
-				conversationHistory = conversationHistory[:len(conversationHistory)-1]
+	maxHistoryTokens := maxTokens - totalTokens
+
+	for _, message := range messages {
+		if message.Author.ID == session.State.User.ID {
+			continue // Skip the bot's own messages
+		}
+
+		if len(message.Content) > 0 {
+			tokens := len(message.Content) + 2 // Account for role and content tokens
+			if totalTokens+tokens <= maxContextTokens && len(conversationHistory) < maxHistoryTokens {
+				conversationHistory = append(conversationHistory, openai.ChatCompletionMessage{
+					Role:    openai.ChatMessageRoleUser,
+					Content: message.Content,
+				})
+				totalTokens += tokens
 			} else {
-				// Otherwise, remove the first message from the conversation history.
-				totalTokens -= len(conversationHistory[0].Content) + len(conversationHistory[0].Role) + 2
-				conversationHistory = conversationHistory[1:]
+				if totalTokens+tokens > maxContextTokens {
+					log.Warn("Message token count exceeds maxContextTokens:", len(message.Content), len(message.Content)+2)
+				} else {
+					log.Warn("Conversation history length exceeds maxContextTokens:", len(conversationHistory), maxHistoryTokens)
+				}
+				break
 			}
 		}
 	}
 
-	// Add a system message at the beginning of the conversation history with the instructions.
-	systemMessage := openai.ChatCompletionMessage{
-		Role:    openai.ChatMessageRoleSystem,
-		Content: "1. Identify the key points or main ideas of the original answers.\n2. Summarize each answer using concise and informative language.\n3. Prioritize clarity and brevity, capturing the essence of the information provided.\n4. Trim down unnecessary details and avoid elaboration.\n5. Make sure the summarized answers still convey accurate and meaningful information.",
+	return conversationHistory
+}
+
+func chatGPT(session *discordgo.Session, channelID string, message string, conversationHistory []openai.ChatCompletionMessage) *discordgo.MessageSend {
+	conversationHistory = populateConversationHistory(session, channelID, conversationHistory)
+
+	client := openai.NewClient(OpenAIToken)
+
+	// Calculate the total tokens in the conversation history
+	totalTokens := 0
+	for _, msg := range conversationHistory {
+		totalTokens += len(msg.Content) + len(msg.Role) + 2
 	}
 
-	// Combine the system message, previous conversation history, and the current user message.
-	messages := append([]openai.ChatCompletionMessage{systemMessage}, conversationHistory...)
-	messages = append(messages, openai.ChatCompletionMessage{
+	log.Info("Total tokens in conversation history:", totalTokens)
+
+	// Calculate the tokens in the completion message
+	completionTokens := len(message)
+	log.Info("Tokens in completion message:", completionTokens)
+
+	// Calculate the total tokens including the new message
+	totalMessageTokens := len(message) + 2 // Account for role and content tokens
+
+	// Ensure the total tokens of messages including new message doesn't exceed maxMessageTokens
+	for totalTokens+totalMessageTokens > maxMessageTokens {
+		tokensToRemove := totalTokens + totalMessageTokens - maxMessageTokens
+		tokensRemoved := 0
+		trimmedMessages := []openai.ChatCompletionMessage{} // Store trimmed messages
+		for _, msg := range conversationHistory {
+			tokens := len(msg.Content) + len(msg.Role) + 2
+			if tokensRemoved+tokens <= tokensToRemove {
+				tokensRemoved += tokens
+				log.Info("Removing message with tokens:", tokens)
+			} else {
+				trimmedMessages = append(trimmedMessages, msg)
+			}
+		}
+		if tokensRemoved > 0 {
+			conversationHistory = trimmedMessages
+			totalTokens -= tokensRemoved
+		} else {
+			break
+		}
+	}
+
+	// Add user message to conversation history
+	userMessage := openai.ChatCompletionMessage{
 		Role:    openai.ChatMessageRoleUser,
 		Content: message,
-	})
+	}
+	conversationHistory = append(conversationHistory, userMessage)
 
+	// Construct system message
+	systemMessage := openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleSystem,
+		Content: systemMessageText,
+	}
+
+	// Combine messages, ensuring they don't exceed maxTokens
+	messages := []openai.ChatCompletionMessage{systemMessage}
+	totalTokens = len(systemMessage.Content) + len(systemMessage.Role) + 2
+
+	for _, msg := range conversationHistory {
+		tokens := len(msg.Content) + len(msg.Role) + 2
+		if totalTokens+tokens <= maxTokens {
+			messages = append(messages, msg)
+			totalTokens += tokens
+		} else {
+			break
+		}
+	}
+
+	// Perform GPT-3.5 Turbo completion
+	log.Info("Starting GPT-3.5 Turbo completion...")
 	resp, err := client.CreateChatCompletion(
 		context.Background(),
 		openai.ChatCompletionRequest{
@@ -65,7 +137,9 @@ func chatGPT(message string, conversationHistory []openai.ChatCompletionMessage)
 			Messages:         messages,
 		},
 	)
+	log.Info("GPT-3.5 Turbo completion done.")
 
+	// Handle API errors
 	if err != nil {
 		log.Error("Error connecting to the OpenAI API:", err)
 		return &discordgo.MessageSend{
@@ -73,8 +147,8 @@ func chatGPT(message string, conversationHistory []openai.ChatCompletionMessage)
 		}
 	}
 
+	// Construct and return the bot's response
 	gptResponse := resp.Choices[0].Message.Content
-
 	embed := &discordgo.MessageSend{
 		Content: gptResponse,
 	}
