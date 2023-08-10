@@ -26,6 +26,7 @@ func Run() {
 
 	discord.Open()
 	defer discord.Close()
+
 	log.Info("BitBot is running...")
 
 	c := make(chan os.Signal, 1)
@@ -56,15 +57,7 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 	conversationHistory = append(conversationHistory, userMessage)
 
 	if strings.Contains(message.Content, "!bit") || isPrivateChannel {
-		gptResponse := chatGPT(discord, message.ChannelID, message.Content, conversationHistory)
-		discord.ChannelTyping(message.ChannelID)
-		discord.ChannelMessageSendComplex(message.ChannelID, gptResponse)
-
-		botMessage := openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleSystem,
-			Content: gptResponse.Content,
-		}
-		conversationHistory = append(conversationHistory, botMessage)
+		chatGPT(discord, message.ChannelID, message.Content, conversationHistory)
 	} else if strings.Contains(message.Content, "!cry") {
 		currentCryptoPrice := getCurrentCryptoPrice(message.Content)
 		discord.ChannelMessageSendComplex(message.ChannelID, currentCryptoPrice)
