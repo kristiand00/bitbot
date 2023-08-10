@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/charmbracelet/log"
@@ -59,6 +60,8 @@ func populateConversationHistory(session *discordgo.Session, channelID string, c
 	return conversationHistory
 }
 
+// ...
+
 func chatGPT(session *discordgo.Session, channelID string, message string, conversationHistory []openai.ChatCompletionMessage) {
 	client := openai.NewClient(OpenAIToken)
 
@@ -111,15 +114,83 @@ func chatGPT(session *discordgo.Session, channelID string, message string, conve
 		return
 	}
 
-	// Construct and send the bot's response as an embed
+	// Paginate the response and send as separate messages with clickable emojis
 	gptResponse := resp.Choices[0].Message.Content
+	pageSize := maxMessageTokens
+
+	// Split the response into pages
+	var pages []string
+	for i := 0; i < len(gptResponse); i += pageSize {
+		end := i + pageSize
+		if end > len(gptResponse) {
+			end = len(gptResponse)
+		}
+		pages = append(pages, gptResponse[i:end])
+	}
+
+	// ...
+
+	// Send the first page
+	currentPage := 0
+	totalPages := len(pages)
 	embed := &discordgo.MessageEmbed{
-		Title:       "BitBot's Response",
-		Description: gptResponse,
+		Title:       fmt.Sprintf("BitBot's Response (Page %d of %d)", currentPage+1, totalPages),
+		Description: pages[currentPage],
 		Color:       0x00ff00, // Green color
 	}
-	_, err = session.ChannelMessageSendEmbed(channelID, embed)
+	msg, err := session.ChannelMessageSendEmbed(channelID, embed)
 	if err != nil {
 		log.Error("Error sending embed message:", err)
+		return
+	}
+
+	// Add reaction emojis for pagination if there are multiple pages
+	if totalPages > 1 { // Only add reactions if there are multiple pages
+		err = session.MessageReactionAdd(channelID, msg.ID, "⬅️")
+		if err != nil {
+			log.Error("Error adding reaction emoji:", err)
+			return
+		}
+		err = session.MessageReactionAdd(channelID, msg.ID, "➡️")
+		if err != nil {
+			log.Error("Error adding reaction emoji:", err)
+			return
+		}
+	}
+
+	// Create a reaction handler function
+	session.AddHandler(func(s *discordgo.Session, r *discordgo.MessageReactionAdd) {
+		// Call the reactionHandler function and pass totalPages
+		reactionHandler(s, r, currentPage, msg, pages, totalPages)
+	})
+
+}
+
+func reactionHandler(session *discordgo.Session, r *discordgo.MessageReactionAdd, currentPage int, msg *discordgo.Message, pages []string, totalPages int) {
+	// Check if the reaction is from the same user and message
+	if r.UserID == session.State.User.ID || r.MessageID != msg.ID {
+		return
+	}
+
+	// Handle pagination based on reaction
+	if r.Emoji.Name == "⬅️" {
+		if currentPage > 0 {
+			currentPage--
+		}
+	} else if r.Emoji.Name == "➡️" {
+		if currentPage < len(pages)-1 {
+			currentPage++
+		}
+	}
+
+	// Update the message with the new page
+	updatedEmbed := &discordgo.MessageEmbed{
+		Title:       fmt.Sprintf("BitBot's Response (Page %d of %d)", currentPage+1, len(pages)),
+		Description: pages[currentPage],
+		Color:       0x00ff00, // Green color
+	}
+	_, err := session.ChannelMessageEditEmbed(r.ChannelID, r.MessageID, updatedEmbed)
+	if err != nil {
+		log.Error("Error editing embed message:", err)
 	}
 }
