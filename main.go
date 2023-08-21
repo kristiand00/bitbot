@@ -28,10 +28,15 @@ func main() {
 	if !ok {
 		log.Fatal("Must set OpenAI token as env variable: OPENAI_TOKEN")
 	}
+	AllowedUserID, ok := os.LookupEnv("ADMIN_DISCORD_ID")
+	if !ok {
+		log.Fatal("Must set OpenAI token as env variable: ADMIN_DISCORD_ID")
+	}
 
 	bot.BotToken = botToken
 	bot.CryptoToken = cryptoToken
 	bot.OpenAIToken = openAIToken
+	bot.AllowedUserID = AllowedUserID
 
 	bot.Run()
 }
