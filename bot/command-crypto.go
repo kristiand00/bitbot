@@ -3,7 +3,7 @@ package bot
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -41,7 +41,7 @@ func getCurrentCryptoPrice(message string) *discordgo.MessageSend {
 		}
 	}
 
-	body, _ := ioutil.ReadAll(response.Body)
+	body, _ := io.ReadAll(response.Body)
 	defer response.Body.Close()
 
 	var data CryptoData
