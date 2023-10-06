@@ -58,12 +58,12 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 
 	conversationHistory = append(conversationHistory, userMessage)
 
-	if strings.Contains(message.Content, "!cry") {
+	if strings.HasPrefix(message.Content, "!cry") {
 		currentCryptoPrice := getCurrentCryptoPrice(message.Content)
 		discord.ChannelMessageSendComplex(message.ChannelID, currentCryptoPrice)
-	} else if strings.Contains(message.Content, "!bit") || isPrivateChannel {
+	} else if strings.HasPrefix(message.Content, "!bit") || isPrivateChannel {
 		chatGPT(discord, message.ChannelID, message.Content, conversationHistory)
-	} else if strings.Contains(message.Content, "!genkey") {
+	} else if strings.HasPrefix(message.Content, "!genkey") {
 		if message.Author.ID == AllowedUserID {
 			err := GenerateAndSaveSSHKeyPairIfNotExist()
 			if err != nil {
@@ -74,7 +74,7 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 		} else {
 			discord.ChannelMessageSend(message.ChannelID, "You are not authorized to use this command.")
 		}
-	} else if strings.Contains(message.Content, "!showkey") {
+	} else if strings.HasPrefix(message.Content, "!showkey") {
 		if message.Author.ID == AllowedUserID {
 			publicKey, err := GetPublicKey()
 			if err != nil {
@@ -85,7 +85,7 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 		} else {
 			discord.ChannelMessageSend(message.ChannelID, "You are not authorized to use this command.")
 		}
-	} else if strings.Contains(message.Content, "!regenkey") {
+	} else if strings.HasPrefix(message.Content, "!regenkey") {
 		if message.Author.ID == AllowedUserID {
 			err := GenerateAndSaveSSHKeyPair()
 			if err != nil {
@@ -96,7 +96,7 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 		} else {
 			discord.ChannelMessageSend(message.ChannelID, "You are not authorized to use this command.")
 		}
-	} else if strings.Contains(message.Content, "!ssh") {
+	} else if strings.HasPrefix(message.Content, "!ssh") {
 		if message.Author.ID == AllowedUserID {
 			commandParts := strings.Fields(message.Content)
 			if len(commandParts) != 2 {
