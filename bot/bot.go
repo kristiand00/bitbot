@@ -19,6 +19,7 @@ var (
 )
 
 func Run() {
+	pb.Init()
 	discord, err := discordgo.New("Bot " + BotToken)
 	if err != nil {
 		log.Fatal(err)
@@ -28,7 +29,6 @@ func Run() {
 
 	discord.Open()
 	defer discord.Close()
-	pb.Run()
 	log.Info("BitBot is running...")
 
 	c := make(chan os.Signal, 1)

@@ -10,10 +10,10 @@ import (
 )
 
 const (
-	maxTokens         = 2000
-	maxContextTokens  = 16000
+	maxTokens         = 4000
+	maxContextTokens  = 2000
 	maxMessageTokens  = 2000
-	systemMessageText = "0. your name is bit you are a discord bot 1. Identify the key points or main ideas of the original answers.\n2. Summarize each answer using concise and informative language.\n3. Prioritize clarity and brevity, capturing the essence of the information provided.\n4. Trim down unnecessary details and avoid elaboration.\n5. Make sure the summarized answers still convey accurate and meaningful information."
+	systemMessageText = "0. your name is !bit you are a discord bot 1. Identify the key points or main ideas of the original answers.\n2. Summarize each answer using concise and informative language.\n3. Prioritize clarity and brevity, capturing the essence of the information provided.\n4. Trim down unnecessary details and avoid elaboration.\n5. Make sure the summarized answers still convey accurate and meaningful information."
 )
 
 func populateConversationHistory(session *discordgo.Session, channelID string, conversationHistory []openai.ChatCompletionMessage) []openai.ChatCompletionMessage {
@@ -94,19 +94,19 @@ func chatGPT(session *discordgo.Session, channelID string, message string, conve
 	}
 	messages = append(messages, userMessage)
 
-	// Perform GPT-3.5 Turbo completion
-	log.Info("Starting GPT-3.5 Turbo completion...")
+	// Perform GPT-4 completion
+	log.Info("Starting completion...")
 	resp, err := client.CreateChatCompletion(
 		context.Background(),
 		openai.ChatCompletionRequest{
 			MaxTokens:        maxTokens,
 			FrequencyPenalty: 0.3,
 			PresencePenalty:  0.6,
-			Model:            openai.GPT3Dot5Turbo16K,
+			Model:            openai.GPT3Dot5Turbo,
 			Messages:         messages,
 		},
 	)
-	log.Info("GPT-3.5 Turbo completion done.")
+	log.Info("completion done.")
 
 	// Handle API errors
 	if err != nil {
