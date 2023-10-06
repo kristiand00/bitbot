@@ -165,7 +165,7 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 				return
 			}
 
-			discord.ChannelMessageSend(message.ChannelID, "Remote server response: "+response)
+			discord.ChannelMessageSend(message.ChannelID, ">\n "+response)
 		} else {
 			discord.ChannelMessageSend(message.ChannelID, "You are not authorized to use this command.")
 		}
@@ -206,7 +206,7 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 
 			// Build a message with the list of servers
 			var serverListMessage strings.Builder
-			serverListMessage.WriteString("Your servers:\n")
+			serverListMessage.WriteString("Recent servers:\n")
 
 			for _, server := range servers {
 				serverListMessage.WriteString(fmt.Sprintf(server.ConnectionDetails))
