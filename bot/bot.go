@@ -2,6 +2,7 @@ package bot
 
 import (
 	"bitbot/pb"
+	"fmt"
 	"os"
 	"os/signal"
 	"strings"
@@ -43,7 +44,6 @@ func Run() {
 
 var conversationHistoryMap = make(map[string][]openai.ChatCompletionMessage)
 var sshConnections = make(map[string]*SSHConnection)
-
 
 func hasAdminRole(roles []string) bool {
 	for _, role := range roles {
@@ -188,6 +188,36 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 		} else {
 			discord.ChannelMessageSend(message.ChannelID, "You are not authorized to use this command.")
 		}
+	} else if strings.HasPrefix(message.Content, "!list") {
+		if hasAdminRole(message.Member.Roles) {
+			// Retrieve the list of servers for the user
+			servers, err := pb.ListServersByUserID(message.Author.ID)
+			if err != nil {
+				log.Error("Error listing servers:", err)
+				discord.ChannelMessageSend(message.ChannelID, "Error listing servers.")
+				return
+			}
+
+			// Check if there are any servers
+			if len(servers) == 0 {
+				discord.ChannelMessageSend(message.ChannelID, "You don't have any servers.")
+				return
+			}
+
+			// Build a message with the list of servers
+			var serverListMessage strings.Builder
+			serverListMessage.WriteString("Your servers:\n")
+
+			for _, server := range servers {
+				serverListMessage.WriteString(fmt.Sprintf(server.ConnectionDetails))
+				// Add other fields as needed
+			}
+
+			// Send the server list message to Discord
+			discord.ChannelMessageSend(message.ChannelID, serverListMessage.String())
+		} else {
+			discord.ChannelMessageSend(message.ChannelID, "You are not authorized to use this command.")
+		}
 	} else if strings.HasPrefix(message.Content, "!help") {
 		if strings.Contains(message.Content, "admin") {
 			adminHelpMessage := "Admin commands:\n" +
@@ -195,6 +225,7 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 				"!showkey - Show the public key.\n" +
 				"!regenkey - Regenerate and save SSH key pair.\n" +
 				"!ssh username@remote-host:port - Connect to a remote server via SSH.\n" +
+				"!list saved servers. (auto save on first connect)\n" +
 				"!exe command - Execute a command on the remote server (after !ssh).\n" +
 				"!exit - Close the SSH connection (after !ssh).\n"
 
