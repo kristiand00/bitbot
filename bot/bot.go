@@ -44,6 +44,15 @@ func Run() {
 var conversationHistoryMap = make(map[string][]openai.ChatCompletionMessage)
 var sshConnections = make(map[string]*SSHConnection)
 
+func hasAdminRole(roles []string) bool {
+	for _, role := range roles {
+		if role == AllowedUserID {
+			return true
+		}
+	}
+	return false
+}
+
 func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 	if message.Author.ID == discord.State.User.ID || message.Content == "" {
 		return
@@ -70,7 +79,7 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 	} else if strings.HasPrefix(message.Content, "!bit") || isPrivateChannel {
 		chatGPT(discord, message.ChannelID, message.Content, conversationHistory)
 	} else if strings.HasPrefix(message.Content, "!genkey") {
-		if message.Author.ID == AllowedUserID {
+		if hasAdminRole(message.Member.Roles) {
 			err := GenerateAndSaveSSHKeyPairIfNotExist()
 			if err != nil {
 				discord.ChannelMessageSend(message.ChannelID, "Error generating or saving key pair.")
@@ -81,7 +90,7 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 			discord.ChannelMessageSend(message.ChannelID, "You are not authorized to use this command.")
 		}
 	} else if strings.HasPrefix(message.Content, "!showkey") {
-		if message.Author.ID == AllowedUserID {
+		if hasAdminRole(message.Member.Roles) {
 			publicKey, err := GetPublicKey()
 			if err != nil {
 				discord.ChannelMessageSend(message.ChannelID, "Error fetching public key.")
@@ -92,7 +101,7 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 			discord.ChannelMessageSend(message.ChannelID, "You are not authorized to use this command.")
 		}
 	} else if strings.HasPrefix(message.Content, "!regenkey") {
-		if message.Author.ID == AllowedUserID {
+		if hasAdminRole(message.Member.Roles) {
 			err := GenerateAndSaveSSHKeyPair()
 			if err != nil {
 				discord.ChannelMessageSend(message.ChannelID, "Error regenerating and saving key pair.")
@@ -103,7 +112,7 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 			discord.ChannelMessageSend(message.ChannelID, "You are not authorized to use this command.")
 		}
 	} else if strings.HasPrefix(message.Content, "!ssh") {
-		if message.Author.ID == AllowedUserID {
+		if hasAdminRole(message.Member.Roles) {
 			commandParts := strings.Fields(message.Content)
 			if len(commandParts) != 2 {
 				discord.ChannelMessageSend(message.ChannelID, "Invalid command format. Use !ssh username@remote-host:port")
@@ -125,7 +134,7 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 			discord.ChannelMessageSend(message.ChannelID, "You are not authorized to use this command.")
 		}
 	} else if strings.HasPrefix(message.Content, "!exe") {
-		if message.Author.ID == AllowedUserID {
+		if hasAdminRole(message.Member.Roles) {
 			// Check if there is an active SSH connection for this user
 			sshConn, ok := sshConnections[message.Author.ID]
 			if !ok {
@@ -148,7 +157,7 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 			discord.ChannelMessageSend(message.ChannelID, "You are not authorized to use this command.")
 		}
 	} else if strings.HasPrefix(message.Content, "!exit") {
-		if message.Author.ID == AllowedUserID {
+		if hasAdminRole(message.Member.Roles) {
 			// Check if there is an active SSH connection for this user
 			sshConn, ok := sshConnections[message.Author.ID]
 			if !ok {
@@ -174,7 +183,7 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 				"!regenkey - Regenerate and save SSH key pair.\n" +
 				"!ssh username@remote-host:port - Connect to a remote server via SSH.\n" +
 				"!exe command - Execute a command on the remote server (after !ssh).\n" +
-				"!sshexit - Close the SSH connection (after !ssh).\n"
+				"!exit - Close the SSH connection (after !ssh).\n"
 
 			discord.ChannelMessageSend(message.ChannelID, adminHelpMessage)
 		} else {
