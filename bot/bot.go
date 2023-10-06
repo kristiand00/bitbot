@@ -44,6 +44,7 @@ func Run() {
 var conversationHistoryMap = make(map[string][]openai.ChatCompletionMessage)
 var sshConnections = make(map[string]*SSHConnection)
 
+
 func hasAdminRole(roles []string) bool {
 	for _, role := range roles {
 		if role == AllowedUserID {
@@ -128,6 +129,18 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 
 			// Store the SSH connection for later use
 			sshConnections[message.Author.ID] = sshConn
+
+			// Save server information to PocketBase
+			serverInfo := &pb.ServerInfo{
+				UserID:            message.Author.ID,
+				ConnectionDetails: connectionDetails,
+			}
+			err = pb.CreateRecord("servers", serverInfo)
+			if err != nil {
+				log.Error(err)
+				discord.ChannelMessageSend(message.ChannelID, "Error saving server information.")
+				return
+			}
 
 			discord.ChannelMessageSend(message.ChannelID, "Connected to remote server!")
 		} else {
