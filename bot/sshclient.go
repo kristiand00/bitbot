@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/charmbracelet/log"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -17,6 +18,48 @@ const (
 	publicKeyPath  = "public_key.pub"
 	bits           = 2048
 )
+
+type SSHConnection struct {
+	client    *ssh.Client
+	commands  chan string
+	responses chan string
+}
+
+func NewSSHConnection(client *ssh.Client) *SSHConnection {
+	return &SSHConnection{
+		client:    client,
+		commands:  make(chan string),
+		responses: make(chan string),
+	}
+}
+
+func (conn *SSHConnection) startCommandExecution() {
+	for cmd := range conn.commands {
+		// Execute the command and send the response back
+		response, err := executeRemoteCommand(conn.client, cmd)
+		if err != nil {
+			log.Error(err)
+			conn.responses <- "Error executing command"
+		} else {
+			conn.responses <- response
+		}
+	}
+}
+
+func executeRemoteCommand(client *ssh.Client, command string) (string, error) {
+	session, err := client.NewSession()
+	if err != nil {
+		return "", err
+	}
+	defer session.Close()
+
+	output, err := session.CombinedOutput(command)
+	if err != nil {
+		return "", err
+	}
+
+	return string(output), nil
+}
 
 func GenerateAndSaveSSHKeyPairIfNotExist() error {
 	if KeyFilesExist(privateKeyPath, publicKeyPath) {
@@ -118,10 +161,10 @@ func SavePublicKeyToFile(filename string, publicKey ssh.PublicKey) error {
 	return nil
 }
 
-func SSHConnectToRemoteServer(connectionDetails string) error {
+func SSHConnectToRemoteServer(connectionDetails string) (*SSHConnection, error) {
 	privateKey, err := LoadPrivateKey(privateKeyPath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	config := &ssh.ClientConfig{
@@ -136,7 +179,7 @@ func SSHConnectToRemoteServer(connectionDetails string) error {
 	// Extract username, host, and port from connectionDetails
 	parts := strings.Split(connectionDetails, "@")
 	if len(parts) != 2 {
-		return errors.New("invalid connection format")
+		return nil, errors.New("invalid connection format")
 	}
 	username := parts[0]
 	hostPort := parts[1]
@@ -146,14 +189,26 @@ func SSHConnectToRemoteServer(connectionDetails string) error {
 	// Connect to the remote server
 	client, err := ssh.Dial("tcp", hostPort, config)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer client.Close()
 
-	// Now you have a connected SSH client to the remote server.
-	// You can use this client to perform remote commands or file transfers.
+	// Create an SSH connection instance
+	conn := NewSSHConnection(client)
 
-	return nil
+	// Start the goroutine for command execution
+	go conn.startCommandExecution()
+
+	// Now you have an active SSH connection with command execution capabilities
+	return conn, nil
+}
+
+func (conn *SSHConnection) ExecuteCommand(command string) (string, error) {
+	// Send the command to the goroutine for execution
+	conn.commands <- command
+
+	// Receive the response
+	response := <-conn.responses
+	return response, nil
 }
 
 func LoadPrivateKey(path string) (ssh.Signer, error) {
