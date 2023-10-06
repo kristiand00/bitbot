@@ -19,7 +19,6 @@ var (
 )
 
 func Run() {
-	pb.Init()
 	discord, err := discordgo.New("Bot " + BotToken)
 	if err != nil {
 		log.Fatal(err)
@@ -27,9 +26,15 @@ func Run() {
 
 	discord.AddHandler(newMessage)
 
+	log.Info("Opening Discord connection...")
 	discord.Open()
 	defer discord.Close()
 	log.Info("BitBot is running...")
+
+	// Try initializing PocketBase after Discord is connected
+	log.Info("Initializing PocketBase...")
+	pb.Init()
+	log.Info("PocketBase initialized successfully.")
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
@@ -37,6 +42,7 @@ func Run() {
 }
 
 var conversationHistoryMap = make(map[string][]openai.ChatCompletionMessage)
+var sshConnections = make(map[string]*SSHConnection)
 
 func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 	if message.Author.ID == discord.State.User.ID || message.Content == "" {
@@ -105,13 +111,39 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 			}
 
 			connectionDetails := commandParts[1]
-			err := SSHConnectToRemoteServer(connectionDetails)
+			sshConn, err := SSHConnectToRemoteServer(connectionDetails)
 			if err != nil {
 				discord.ChannelMessageSend(message.ChannelID, "Error connecting to remote server.")
 				return
 			}
 
+			// Store the SSH connection for later use
+			sshConnections[message.Author.ID] = sshConn
+
 			discord.ChannelMessageSend(message.ChannelID, "Connected to remote server!")
+		} else {
+			discord.ChannelMessageSend(message.ChannelID, "You are not authorized to use this command.")
+		}
+	} else if strings.HasPrefix(message.Content, "!exe") {
+		if message.Author.ID == AllowedUserID {
+			// Check if there is an active SSH connection for this user
+			sshConn, ok := sshConnections[message.Author.ID]
+			if !ok {
+				discord.ChannelMessageSend(message.ChannelID, "You are not connected to any remote server. Use !ssh first.")
+				return
+			}
+
+			// Extract the command after "!exe"
+			command := strings.TrimPrefix(message.Content, "!exe ")
+
+			// Execute the command on the remote server
+			response, err := sshConn.ExecuteCommand(command)
+			if err != nil {
+				discord.ChannelMessageSend(message.ChannelID, "Error executing command on remote server.")
+				return
+			}
+
+			discord.ChannelMessageSend(message.ChannelID, "Remote server response: "+response)
 		} else {
 			discord.ChannelMessageSend(message.ChannelID, "You are not authorized to use this command.")
 		}
