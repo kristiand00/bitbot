@@ -238,3 +238,9 @@ func GetPublicKey() (string, error) {
 
 	return string(publicKeyBytes), nil
 }
+
+func (conn *SSHConnection) Close() {
+	close(conn.commands)
+	close(conn.responses)
+	conn.client.Close()
+}
