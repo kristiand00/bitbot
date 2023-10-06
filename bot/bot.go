@@ -147,6 +147,45 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 		} else {
 			discord.ChannelMessageSend(message.ChannelID, "You are not authorized to use this command.")
 		}
+	} else if strings.HasPrefix(message.Content, "!exit") {
+		if message.Author.ID == AllowedUserID {
+			// Check if there is an active SSH connection for this user
+			sshConn, ok := sshConnections[message.Author.ID]
+			if !ok {
+				discord.ChannelMessageSend(message.ChannelID, "You are not connected to any remote server. Use !ssh first.")
+				return
+			}
+
+			// Close the SSH connection
+			sshConn.Close()
+
+			// Remove the SSH connection from the map
+			delete(sshConnections, message.Author.ID)
+
+			discord.ChannelMessageSend(message.ChannelID, "SSH connection closed.")
+		} else {
+			discord.ChannelMessageSend(message.ChannelID, "You are not authorized to use this command.")
+		}
+	} else if strings.HasPrefix(message.Content, "!help") {
+		if strings.Contains(message.Content, "admin") {
+			adminHelpMessage := "Admin commands:\n" +
+				"!genkey - Generate and save SSH key pair.\n" +
+				"!showkey - Show the public key.\n" +
+				"!regenkey - Regenerate and save SSH key pair.\n" +
+				"!ssh username@remote-host:port - Connect to a remote server via SSH.\n" +
+				"!exe command - Execute a command on the remote server (after !ssh).\n" +
+				"!sshexit - Close the SSH connection (after !ssh).\n"
+
+			discord.ChannelMessageSend(message.ChannelID, adminHelpMessage)
+		} else {
+			generalHelpMessage := "Available commands:\n" +
+				"!cry - Get information about cryptocurrency prices.\n" +
+				"!bit - Interact with the BitBot chatbot.\n" +
+				"!help - Show available commands.\n" +
+				"!help admin - Show admin commands.\n"
+
+			discord.ChannelMessageSend(message.ChannelID, generalHelpMessage)
+		}
 	}
 
 	conversationHistoryMap[userID] = conversationHistory
