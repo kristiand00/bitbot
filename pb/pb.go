@@ -14,6 +14,11 @@ var (
 	once sync.Once
 )
 
+type ServerInfo struct {
+	UserID            string
+	ConnectionDetails string
+}
+
 // Init initializes the PocketBase app
 func Init() {
 	once.Do(func() {
@@ -39,4 +44,33 @@ func GetRecordById(collectionID string, recordID string) (*models.Record, error)
 	}
 
 	return record, nil
+}
+
+func CreateRecord(collectionName string, record *ServerInfo) error {
+	// Find the collection
+	collection, err := app.Dao().FindCollectionByNameOrId(collectionName)
+	if err != nil {
+		log.Error(err)
+		return err
+	}
+
+	// Create a new record
+	newRecord := models.NewRecord(collection)
+
+	// Convert ServerInfo to a map
+	recordMap := map[string]interface{}{
+		"UserID":            record.UserID,
+		"ConnectionDetails": record.ConnectionDetails,
+	}
+
+	// Bulk load with record.Load(map[string]interface{})
+	newRecord.Load(recordMap)
+
+	// Save the record
+	if err := app.Dao().SaveRecord(newRecord); err != nil {
+		log.Error(err)
+		return err
+	}
+
+	return nil
 }
