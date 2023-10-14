@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	maxTokens         = 4000
-	maxContextTokens  = 2000
+	maxTokens         = 2000
+	maxContextTokens  = 4000
 	maxMessageTokens  = 2000
 	systemMessageText = "0. your name is !bit you are a discord bot 1. Identify the key points or main ideas of the original answers.\n2. Summarize each answer using concise and informative language.\n3. Prioritize clarity and brevity, capturing the essence of the information provided.\n4. Trim down unnecessary details and avoid elaboration.\n5. Make sure the summarized answers still convey accurate and meaningful information."
 )
@@ -93,6 +93,25 @@ func chatGPT(session *discordgo.Session, channelID string, message string, conve
 		Content: message,
 	}
 	messages = append(messages, userMessage)
+
+	// Trim conversation history if it exceeds maxContextTokens
+	totalTokens := 0
+	trimmedMessages := []openai.ChatCompletionMessage{}
+
+	for i := 0; i < len(messages); i++ {
+		msg := messages[i]
+		tokens := len(msg.Content) + len(msg.Role) + 2 // Account for role and content tokens
+
+		if totalTokens+tokens <= maxContextTokens {
+			trimmedMessages = append(trimmedMessages, msg)
+			totalTokens += tokens
+		} else {
+			break
+		}
+	}
+
+	// Update messages with trimmed conversation history
+	messages = trimmedMessages
 
 	// Perform GPT-4 completion
 	log.Info("Starting completion...")
