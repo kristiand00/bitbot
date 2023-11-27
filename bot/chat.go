@@ -49,10 +49,6 @@ func populateConversationHistory(session *discordgo.Session, channelID string, c
 	// Add new messages from the channel
 	addedTokens := 0
 	for _, message := range messages {
-		if message.Author.ID == session.State.User.ID || message.Author.Bot {
-			continue // Skip the bot's own messages
-		}
-
 		if len(message.Content) > 0 {
 			tokens := len(message.Content) + 2 // Account for role and content tokens
 			if totalTokens+tokens <= maxContextTokens && addedTokens+tokens <= maxContextTokens {
@@ -79,46 +75,31 @@ func populateConversationHistory(session *discordgo.Session, channelID string, c
 func chatGPT(session *discordgo.Session, channelID string, message string, conversationHistory []openai.ChatCompletionMessage) {
 	client := openai.NewClient(OpenAIToken)
 
-	// Retrieve recent messages from the channel
-	channelMessages, err := session.ChannelMessages(channelID, 50, "", "", "")
-	if err != nil {
-		log.Error("Error retrieving channel messages:", err)
-	}
-
-	// Convert channel messages to chat completion messages
-	for _, msg := range channelMessages {
-		if msg.Author.ID != session.State.User.ID && len(msg.Content) > 0 {
-			conversationHistory = append(conversationHistory, openai.ChatCompletionMessage{
-				Role:    openai.ChatMessageRoleUser,
-				Content: msg.Content,
-			})
-		}
-	}
 	// Trim conversation history if it exceeds maxContextTokens
-	totalTokens := 0
-	trimmedMessages := []openai.ChatCompletionMessage{}
+	// totalTokens := 0
+	// trimmedMessages := []openai.ChatCompletionMessage{}
 
-	for i := len(conversationHistory) - 1; i >= 0; i-- {
-		msg := conversationHistory[i]
-		tokens := len(msg.Content) + len(msg.Role) + 2 // Account for role and content tokens
+	// for i := len(conversationHistory) - 1; i >= 0; i-- {
+	// 	msg := conversationHistory[i]
+	// 	tokens := len(msg.Content) + len(msg.Role) + 2 // Account for role and content tokens
 
-		if totalTokens+tokens <= maxContextTokens {
-			trimmedMessages = append([]openai.ChatCompletionMessage{msg}, trimmedMessages...)
-			totalTokens += tokens
-		} else {
-			break
-		}
-	}
+	// 	if totalTokens+tokens <= maxContextTokens {
+	// 		trimmedMessages = append([]openai.ChatCompletionMessage{msg}, trimmedMessages...)
+	// 		totalTokens += tokens
+	// 	} else {
+	// 		break
+	// 	}
+	// }
 
 	// Update conversationHistory with trimmed conversation history
-	conversationHistory = trimmedMessages
+	//conversationHistory = trimmedMessages
 
 	// Add user message to conversation history
-	userMessage := openai.ChatCompletionMessage{
-		Role:    openai.ChatMessageRoleUser,
-		Content: message,
-	}
-	conversationHistory = append(conversationHistory, userMessage)
+	//userMessage := openai.ChatCompletionMessage{
+	//	Role:    openai.ChatMessageRoleUser,
+	//	Content: message,
+	//}
+	//conversationHistory = append(conversationHistory, userMessage)
 
 	// Perform GPT-4 completion
 	log.Info("Starting completion...", conversationHistory)

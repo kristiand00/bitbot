@@ -3,8 +3,10 @@ package bot
 import (
 	"bitbot/pb"
 	"fmt"
+	"math/rand"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 
 	"github.com/bwmarrin/discordgo"
@@ -67,12 +69,7 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 	channelID := message.ChannelID
 	conversationHistory = populateConversationHistory(discord, channelID, conversationHistory)
 
-	userMessage := openai.ChatCompletionMessage{
-		Role:    openai.ChatMessageRoleUser,
-		Content: message.Content,
-	}
-
-	conversationHistory = append(conversationHistory, userMessage)
+	log.Info("Conversation history from bot.go:", conversationHistory)
 
 	if strings.HasPrefix(message.Content, "!cry") {
 		currentCryptoPrice := getCurrentCryptoPrice(message.Content)
@@ -234,12 +231,33 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 			generalHelpMessage := "Available commands:\n" +
 				"!cry - Get information about cryptocurrency prices.\n" +
 				"!bit - Interact with the BitBot chatbot.\n" +
+				"!roll - Random number from 1-100 or specify a number (!roll 9001).\n" +
 				"!help - Show available commands.\n" +
 				"!help admin - Show admin commands.\n"
 
 			discord.ChannelMessageSend(message.ChannelID, generalHelpMessage)
 		}
+	} else if strings.HasPrefix(message.Content, "!roll") {
+		handleRollCommand(discord, message)
 	}
 
 	conversationHistoryMap[userID] = conversationHistory
+}
+func handleRollCommand(session *discordgo.Session, message *discordgo.MessageCreate) {
+	// Extract the argument from the message
+	args := strings.Fields(message.Content[len("!roll"):])
+	if len(args) == 0 {
+		// No argument provided, generate random number between 1 and 100
+		randomNumber := rand.Intn(100) + 1
+		session.ChannelMessageSend(message.ChannelID, fmt.Sprintf("You rolled a %d!", randomNumber))
+	} else {
+		// Argument provided, try to parse it as a number
+		if num, err := strconv.Atoi(args[0]); err == nil {
+			// Generate random number between 1 and the provided number
+			randomNumber := rand.Intn(num) + 1
+			session.ChannelMessageSend(message.ChannelID, fmt.Sprintf("%d", randomNumber))
+		} else {
+			session.ChannelMessageSend(message.ChannelID, "Invalid argument. Please provide a valid number.")
+		}
+	}
 }
