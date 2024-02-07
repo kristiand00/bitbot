@@ -120,7 +120,7 @@ func chatGPT(session *discordgo.Session, channelID string, message string, conve
 	currentPage := 0
 	totalPages := len(pages)
 	embed := &discordgo.MessageEmbed{
-		Title:       fmt.Sprintf("BitBot's Response (Page %d of %d)", currentPage+1, totalPages),
+		Title:       fmt.Sprintf("Page %d of %d", currentPage+1, totalPages),
 		Description: pages[currentPage],
 		Color:       0x00ff00, // Green color
 	}
@@ -171,7 +171,7 @@ func reactionHandler(session *discordgo.Session, r *discordgo.MessageReactionAdd
 
 	// Update the message with the new page
 	updatedEmbed := &discordgo.MessageEmbed{
-		Title:       fmt.Sprintf("BitBot's Response (Page %d of %d)", currentPage+1, len(pages)),
+		Title:       fmt.Sprintf("Page %d of %d", currentPage+1, len(pages)),
 		Description: pages[currentPage],
 		Color:       0x00ff00, // Green color
 	}
