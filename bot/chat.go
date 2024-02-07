@@ -17,21 +17,21 @@ const (
 )
 
 func populateConversationHistory(session *discordgo.Session, channelID string, conversationHistory []openai.ChatCompletionMessage) []openai.ChatCompletionMessage {
-	messages, err := session.ChannelMessages(channelID, 50, "", "", "")
+	messages, err := session.ChannelMessages(channelID, 20, "", "", "")
 	if err != nil {
 		log.Error("Error retrieving channel history:", err)
 		return conversationHistory
 	}
 
 	totalTokens := 0
+	maxHistoryTokens := maxTokens
+
+	// Calculate total tokens without removing any messages
 	for _, msg := range conversationHistory {
 		totalTokens += len(msg.Content) + len(msg.Role) + 2
 	}
 
-	maxHistoryTokens := maxTokens - totalTokens
-	if maxHistoryTokens < 0 {
-		maxHistoryTokens = 0
-	}
+	log.Info("Total Tokens Before Trimming:", totalTokens)
 
 	// Iterate from the beginning of conversationHistory (oldest messages)
 	for i := 0; i < len(conversationHistory); i++ {
@@ -40,24 +40,28 @@ func populateConversationHistory(session *discordgo.Session, channelID string, c
 
 		if totalTokens-tokens >= maxHistoryTokens {
 			// Remove the oldest message
+			log.Info("Removing Oldest Message:", msg.Content)
 			conversationHistory = conversationHistory[i+1:]
+			i-- // Adjust index after removal
+		} else {
 			totalTokens -= tokens
-			break
 		}
 	}
 
+	log.Info("Total Tokens After Trimming:", totalTokens)
+
 	// Add new messages from the channel
-	addedTokens := 0
-	for _, message := range messages {
+	for i := len(messages) - 1; i >= 0; i-- {
+		message := messages[i]
 		if len(message.Content) > 0 {
 			tokens := len(message.Content) + 2 // Account for role and content tokens
-			if totalTokens+tokens <= maxContextTokens && addedTokens+tokens <= maxContextTokens {
+			if totalTokens+tokens <= maxContextTokens {
 				conversationHistory = append(conversationHistory, openai.ChatCompletionMessage{
 					Role:    openai.ChatMessageRoleUser,
 					Content: message.Content,
 				})
 				totalTokens += tokens
-				addedTokens += tokens
+				log.Info("Adding New Message:", message.Content)
 			} else {
 				if totalTokens+tokens > maxContextTokens {
 					log.Warn("Message token count exceeds maxContextTokens:", len(message.Content), len(message.Content)+2)
@@ -69,37 +73,14 @@ func populateConversationHistory(session *discordgo.Session, channelID string, c
 		}
 	}
 
+	// Log the final order of conversation history
+	log.Info("Final Conversation History Order:", conversationHistory)
+
 	return conversationHistory
 }
 
 func chatGPT(session *discordgo.Session, channelID string, message string, conversationHistory []openai.ChatCompletionMessage) {
 	client := openai.NewClient(OpenAIToken)
-
-	// Trim conversation history if it exceeds maxContextTokens
-	// totalTokens := 0
-	// trimmedMessages := []openai.ChatCompletionMessage{}
-
-	// for i := len(conversationHistory) - 1; i >= 0; i-- {
-	// 	msg := conversationHistory[i]
-	// 	tokens := len(msg.Content) + len(msg.Role) + 2 // Account for role and content tokens
-
-	// 	if totalTokens+tokens <= maxContextTokens {
-	// 		trimmedMessages = append([]openai.ChatCompletionMessage{msg}, trimmedMessages...)
-	// 		totalTokens += tokens
-	// 	} else {
-	// 		break
-	// 	}
-	// }
-
-	// Update conversationHistory with trimmed conversation history
-	//conversationHistory = trimmedMessages
-
-	// Add user message to conversation history
-	//userMessage := openai.ChatCompletionMessage{
-	//	Role:    openai.ChatMessageRoleUser,
-	//	Content: message,
-	//}
-	//conversationHistory = append(conversationHistory, userMessage)
 
 	// Perform GPT-4 completion
 	log.Info("Starting completion...", conversationHistory)
@@ -114,8 +95,6 @@ func chatGPT(session *discordgo.Session, channelID string, message string, conve
 		},
 	)
 	log.Info("completion done.")
-
-	// ...
 
 	// Handle API errors
 	if err != nil {
@@ -136,8 +115,6 @@ func chatGPT(session *discordgo.Session, channelID string, message string, conve
 		}
 		pages = append(pages, gptResponse[i:end])
 	}
-
-	// ...
 
 	// Send the first page
 	currentPage := 0
