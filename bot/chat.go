@@ -1,182 +1,160 @@
 package bot
 
 import (
-	"context"
-	"fmt"
+	"bytes"
+	"encoding/json"
+	"io"
+	"net/http"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/charmbracelet/log"
-	openai "github.com/sashabaranov/go-openai"
 )
 
 const (
 	maxTokens         = 2000
-	maxContextTokens  = 4000
+	maxContextTokens  = 2000
 	maxMessageTokens  = 2000
-	systemMessageText = "your name is !bit you are a discord bot"
+	systemMessageText = "your name is !bit you are a discord bot, you use brief answers untill asked to elaborate or explain"
 )
 
-func populateConversationHistory(session *discordgo.Session, channelID string, conversationHistory []openai.ChatCompletionMessage) []openai.ChatCompletionMessage {
+func populateConversationHistory(session *discordgo.Session, channelID string, conversationHistory []map[string]interface{}) []map[string]interface{} {
+	// Retrieve recent messages from the Discord channel
 	messages, err := session.ChannelMessages(channelID, 20, "", "", "")
 	if err != nil {
 		log.Error("Error retrieving channel history:", err)
 		return conversationHistory
 	}
 
+	// Define max tokens for the conversation history
+	maxTokens := 2000
 	totalTokens := 0
-	maxHistoryTokens := maxTokens
 
-	// Calculate total tokens without removing any messages
+	// Calculate current token count in conversation history
 	for _, msg := range conversationHistory {
-		totalTokens += len(msg.Content) + len(msg.Role) + 2
-	}
-
-	log.Info("Total Tokens Before Trimming:", totalTokens)
-
-	// Iterate from the beginning of conversationHistory (oldest messages)
-	for i := 0; i < len(conversationHistory); i++ {
-		msg := conversationHistory[i]
-		tokens := len(msg.Content) + len(msg.Role) + 2 // Account for role and content tokens
-
-		if totalTokens-tokens >= maxHistoryTokens {
-			// Remove the oldest message
-			log.Info("Removing Oldest Message:", msg.Content)
-			conversationHistory = conversationHistory[i+1:]
-			i-- // Adjust index after removal
-		} else {
-			totalTokens -= tokens
+		content, okContent := msg["Content"].(string)
+		role, okRole := msg["Role"].(string)
+		if okContent && okRole {
+			tokens := len(content) + len(role) + 2 // Account for tokens in content and role
+			totalTokens += tokens
+			log.Infof("Existing message tokens: %d", tokens)
 		}
 	}
 
-	log.Info("Total Tokens After Trimming:", totalTokens)
-
-	// Add new messages from the channel
+	// Process messages in reverse order (newest to oldest)
 	for i := len(messages) - 1; i >= 0; i-- {
 		message := messages[i]
-		if len(message.Content) > 0 {
-			tokens := len(message.Content) + 2 // Account for role and content tokens
-			if totalTokens+tokens <= maxContextTokens {
-				conversationHistory = append(conversationHistory, openai.ChatCompletionMessage{
-					Role:    openai.ChatMessageRoleUser,
-					Content: message.Content,
+
+		// Check if the message is older than 30 minutes
+		if time.Since(message.Timestamp) < 30*time.Minute {
+			tokens := len(message.Content) + 2
+			if totalTokens+tokens <= maxTokens {
+				// Append as map[string]interface{} instead of map[string]string
+				conversationHistory = append(conversationHistory, map[string]interface{}{
+					"role":    "user",
+					"content": message.Content,
 				})
 				totalTokens += tokens
-				log.Info("Adding New Message:", message.Content)
+				log.Infof("Adding message with tokens: %d", tokens)
 			} else {
-				if totalTokens+tokens > maxContextTokens {
-					log.Warn("Message token count exceeds maxContextTokens:", len(message.Content), len(message.Content)+2)
-				} else {
-					log.Warn("Conversation history length exceeds maxContextTokens:", len(conversationHistory), maxHistoryTokens)
-				}
-				break
+				log.Warnf("Skipping message with tokens: %d", tokens)
 			}
+		} else {
+			log.Infof("Skipping message, older than 30 minutes: %s", message.Content)
+		}
+
+		// Ensure the current message is included (regardless of token limit)
+		conversationHistory = append(conversationHistory, map[string]interface{}{
+			"role":    "user",
+			"content": message.Content,
+		})
+		totalTokens += len(message.Content) + 2
+		log.Infof("Adding message with tokens: %d", totalTokens)
+
+		// Now check if the token limit is exceeded and trim older messages
+		if totalTokens > maxTokens && len(conversationHistory) > 1 {
+			// Remove the oldest message from the history
+			conversationHistory = conversationHistory[1:]
+			content, okContent := conversationHistory[0]["Content"].(string)
+			role, okRole := conversationHistory[0]["Role"].(string)
+			if okContent && okRole {
+				tokens := len(content) + len(role) + 2
+				totalTokens -= tokens
+				log.Infof("Trimming message with tokens: %d", tokens)
+			}
+			log.Info("Trimming oldest message to maintain token limit")
 		}
 	}
 
-	// Log the final order of conversation history
-	log.Info("Final Conversation History Order:", conversationHistory)
-
+	log.Info("Final Conversation History Order: %s", conversationHistory)
 	return conversationHistory
 }
 
-func chatGPT(session *discordgo.Session, channelID string, message string, conversationHistory []openai.ChatCompletionMessage) {
-	client := openai.NewClient(OpenAIToken)
+// Function to handle Groq API requests and pagination
+func chatGPT(session *discordgo.Session, channelID string, conversationHistory []map[string]interface{}) {
+	OpenAIToken := OpenAIToken
+	GroqBaseURL := "https://api.groq.com/openai/v1"
+	GroqModel := "llama-3.1-70b-versatile"
 
-	// Perform GPT-4 completion
-	log.Info("Starting completion...", conversationHistory)
-	resp, err := client.CreateChatCompletion(
-		context.Background(),
-		openai.ChatCompletionRequest{
-			MaxTokens:        maxTokens,
-			FrequencyPenalty: 0.3,
-			PresencePenalty:  0.6,
-			Model:            openai.GPT3Dot5Turbo,
-			Messages:         conversationHistory, // Use trimmed conversation history
-		},
-	)
-	log.Info("completion done.")
+	// Add system message at the start of conversation history
+	conversationHistory = append([]map[string]interface{}{
+		{"role": "system", "content": systemMessageText},
+	}, conversationHistory...)
 
-	// Handle API errors
-	if err != nil {
-		log.Error("Error connecting to the OpenAI API:", err)
-		return
-	}
-
-	// Paginate the response and send as separate messages with clickable emojis
-	gptResponse := resp.Choices[0].Message.Content
-	pageSize := maxMessageTokens
-
-	// Split the response into pages
-	var pages []string
-	for i := 0; i < len(gptResponse); i += pageSize {
-		end := i + pageSize
-		if end > len(gptResponse) {
-			end = len(gptResponse)
-		}
-		pages = append(pages, gptResponse[i:end])
-	}
-
-	// Send the first page
-	currentPage := 0
-	totalPages := len(pages)
-	embed := &discordgo.MessageEmbed{
-		Title:       fmt.Sprintf("Page %d of %d", currentPage+1, totalPages),
-		Description: pages[currentPage],
-		Color:       0x00ff00, // Green color
-	}
-	msg, err := session.ChannelMessageSendEmbed(channelID, embed)
-	if err != nil {
-		log.Error("Error sending embed message:", err)
-		return
-	}
-
-	// Add reaction emojis for pagination if there are multiple pages
-	if totalPages > 1 { // Only add reactions if there are multiple pages
-		err = session.MessageReactionAdd(channelID, msg.ID, "⬅️")
-		if err != nil {
-			log.Error("Error adding reaction emoji:", err)
-			return
-		}
-		err = session.MessageReactionAdd(channelID, msg.ID, "➡️")
-		if err != nil {
-			log.Error("Error adding reaction emoji:", err)
-			return
-		}
-	}
-
-	// Create a reaction handler function
-	session.AddHandler(func(s *discordgo.Session, r *discordgo.MessageReactionAdd) {
-		// Call the reactionHandler function and pass totalPages
-		reactionHandler(s, r, currentPage, msg, pages, totalPages)
+	client := http.Client{}
+	requestBody, err := json.Marshal(map[string]interface{}{
+		"model":             GroqModel,
+		"messages":          conversationHistory,
+		"max_tokens":        maxTokens,
+		"frequency_penalty": 0.3,
+		"presence_penalty":  0.6,
 	})
-
-}
-
-func reactionHandler(session *discordgo.Session, r *discordgo.MessageReactionAdd, currentPage int, msg *discordgo.Message, pages []string, totalPages int) {
-	// Check if the reaction is from the same user and message
-	if r.UserID == session.State.User.ID || r.MessageID != msg.ID {
+	if err != nil {
+		log.Errorf("Failed to marshal request body: %v", err)
 		return
 	}
 
-	// Handle pagination based on reaction
-	if r.Emoji.Name == "⬅️" {
-		if currentPage > 0 {
-			currentPage--
-		}
-	} else if r.Emoji.Name == "➡️" {
-		if currentPage < len(pages)-1 {
-			currentPage++
-		}
+	req, err := http.NewRequest("POST", GroqBaseURL+"/chat/completions", bytes.NewBuffer(requestBody))
+	if err != nil {
+		log.Errorf("Failed to create request: %v", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+OpenAIToken)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Errorf("Failed to make request: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	var groqResp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
 	}
 
-	// Update the message with the new page
-	updatedEmbed := &discordgo.MessageEmbed{
-		Title:       fmt.Sprintf("Page %d of %d", currentPage+1, len(pages)),
-		Description: pages[currentPage],
-		Color:       0x00ff00, // Green color
-	}
-	_, err := session.ChannelMessageEditEmbed(r.ChannelID, r.MessageID, updatedEmbed)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Error("Error editing embed message:", err)
+		log.Errorf("Failed to read response body: %v", err)
+		return
+	}
+
+	err = json.Unmarshal(body, &groqResp)
+	if err != nil {
+		log.Errorf("Failed to decode response: %v", err)
+		return
+	}
+
+	if len(groqResp.Choices) > 0 {
+		gptResponse := groqResp.Choices[0].Message.Content
+		_, err := session.ChannelMessageSend(channelID, gptResponse)
+		if err != nil {
+			log.Error("Error sending message:", err)
+			return
+		}
 	}
 }

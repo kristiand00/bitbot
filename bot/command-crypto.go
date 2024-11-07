@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -20,17 +19,17 @@ type CryptoData struct {
 }
 
 func getCurrentCryptoPrice(message string) *discordgo.MessageSend {
-	r, _ := regexp.Compile(`\s?[A-Z]{3,5}\s?`)
-	currency := r.FindString(message)
-	curr := strings.ReplaceAll(currency, " ", "")
+	message = strings.ToUpper(strings.TrimSpace(message)) // convert to uppercase and remove leading/trailing spaces
+	message = strings.ReplaceAll(message, "!CRY ", "")    // remove "!cry" prefix
+	currency := message[:]
 
-	if curr == "" {
+	if len(currency) < 3 || len(currency) > 5 { // check length of currency code
 		return &discordgo.MessageSend{
-			Content: "Sorry, cant recognize crypto currency shortcode try uppercase and with spaces around",
+			Content: "Sorry, cant recognize crypto currency shortcode try uppercase and with length between 3 to 5",
 		}
 	}
 
-	cryptoURL := fmt.Sprintf("%s?fsym=%s&tsyms=USD&api_key=%s", URL, curr, CryptoToken)
+	cryptoURL := fmt.Sprintf("%s?fsym=%s&tsyms=USD&api_key=%s", URL, currency, CryptoToken)
 	fmt.Println(cryptoURL)
 	client := http.Client{Timeout: 5 * time.Second}
 
@@ -54,10 +53,10 @@ func getCurrentCryptoPrice(message string) *discordgo.MessageSend {
 		Embeds: []*discordgo.MessageEmbed{{
 			Type:        discordgo.EmbedTypeRich,
 			Title:       "Current Price",
-			Description: "Price for " + curr,
+			Description: "Price for " + currency,
 			Fields: []*discordgo.MessageEmbedField{
 				{
-					Name:   "1 " + curr,
+					Name:   "1 " + currency,
 					Value:  usd + " USD",
 					Inline: true,
 				},
