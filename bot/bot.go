@@ -11,7 +11,6 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/charmbracelet/log"
-	"github.com/sashabaranov/go-openai"
 )
 
 var (
@@ -44,7 +43,7 @@ func Run() {
 	<-c
 }
 
-var conversationHistoryMap = make(map[string][]openai.ChatCompletionMessage)
+var conversationHistoryMap = make(map[string][]map[string]interface{})
 var sshConnections = make(map[string]*SSHConnection)
 
 func hasAdminRole(roles []string) bool {
@@ -69,13 +68,11 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 	channelID := message.ChannelID
 	conversationHistory = populateConversationHistory(discord, channelID, conversationHistory)
 
-	log.Info("Conversation history from bot.go:", conversationHistory)
-
 	if strings.HasPrefix(message.Content, "!cry") {
 		currentCryptoPrice := getCurrentCryptoPrice(message.Content)
 		discord.ChannelMessageSendComplex(message.ChannelID, currentCryptoPrice)
 	} else if strings.HasPrefix(message.Content, "!bit") || isPrivateChannel {
-		chatGPT(discord, message.ChannelID, message.Content, conversationHistory)
+		chatGPT(discord, message.ChannelID, conversationHistory)
 	} else if strings.HasPrefix(message.Content, "!genkey") {
 		if hasAdminRole(message.Member.Roles) {
 			err := GenerateAndSaveSSHKeyPairIfNotExist()
