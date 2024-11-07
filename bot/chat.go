@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	maxTokens         = 2000
+	maxTokens         = 1500
 	maxContextTokens  = 2000
 	maxMessageTokens  = 2000
 	systemMessageText = "your name is !bit you are a discord bot, you use brief answers untill asked to elaborate or explain"
@@ -26,75 +26,73 @@ func populateConversationHistory(session *discordgo.Session, channelID string, c
 		return conversationHistory
 	}
 
-	// Define max tokens for the conversation history
-	maxTokens := 2000
+	// Set max tokens and initialize counters
+	maxTokens := 1500
 	totalTokens := 0
 
-	// Calculate current token count in conversation history
+	// Calculate the token count for existing messages in history
 	for _, msg := range conversationHistory {
-		content, okContent := msg["Content"].(string)
-		role, okRole := msg["Role"].(string)
-		if okContent && okRole {
-			tokens := len(content) + len(role) + 2 // Account for tokens in content and role
+		content, okContent := msg["content"].(string)
+		if okContent {
+			tokens := len(content) + 2 // Account for message tokens
 			totalTokens += tokens
-			log.Infof("Existing message tokens: %d", tokens)
 		}
 	}
 
-	// Process messages in reverse order (newest to oldest)
-	for i := len(messages) - 1; i >= 0; i-- {
-		message := messages[i]
-
-		// Check if the message is older than 30 minutes
-		if time.Since(message.Timestamp) < 30*time.Minute {
-			tokens := len(message.Content) + 2
-			if totalTokens+tokens <= maxTokens {
-				// Append as map[string]interface{} instead of map[string]string
-				conversationHistory = append(conversationHistory, map[string]interface{}{
-					"role":    "user",
-					"content": message.Content,
-				})
-				totalTokens += tokens
-				log.Infof("Adding message with tokens: %d", tokens)
-			} else {
-				log.Warnf("Skipping message with tokens: %d", tokens)
-			}
-		} else {
-			log.Infof("Skipping message, older than 30 minutes: %s", message.Content)
-		}
-
-		// Ensure the current message is included (regardless of token limit)
+	// Add the latest message first
+	if len(messages) > 0 {
+		latestMessage := messages[0]
+		latestTokens := len(latestMessage.Content) + 2
 		conversationHistory = append(conversationHistory, map[string]interface{}{
 			"role":    "user",
-			"content": message.Content,
+			"content": latestMessage.Content,
 		})
-		totalTokens += len(message.Content) + 2
-		log.Infof("Adding message with tokens: %d", totalTokens)
+		totalTokens += latestTokens
+		log.Infof("Added latest message with tokens: %d", latestTokens)
+	}
 
-		// Now check if the token limit is exceeded and trim older messages
-		if totalTokens > maxTokens && len(conversationHistory) > 1 {
-			// Remove the oldest message from the history
-			conversationHistory = conversationHistory[1:]
-			content, okContent := conversationHistory[0]["Content"].(string)
-			role, okRole := conversationHistory[0]["Role"].(string)
-			if okContent && okRole {
-				tokens := len(content) + len(role) + 2
-				totalTokens -= tokens
-				log.Infof("Trimming message with tokens: %d", tokens)
-			}
-			log.Info("Trimming oldest message to maintain token limit")
+	// Process the remaining messages in reverse (newest to oldest) and add if under limit
+	for i := 1; i < len(messages); i++ {
+		message := messages[i]
+		if time.Since(message.Timestamp) > 30*time.Minute {
+			continue // Skip messages older than 30 minutes
+		}
+
+		tokens := len(message.Content) + 2
+		if totalTokens+tokens <= maxTokens {
+			conversationHistory = append([]map[string]interface{}{{
+				"role":    "user",
+				"content": message.Content,
+			}}, conversationHistory...)
+			totalTokens += tokens
+			log.Infof("Adding message with tokens: %d", tokens)
+		} else {
+			break // Stop if adding the next message would exceed the max token limit
 		}
 	}
 
-	log.Info("Final Conversation History Order: %s", conversationHistory)
+	// Trim older messages if needed
+	for totalTokens > maxTokens && len(conversationHistory) > 1 {
+		firstMessage := conversationHistory[0]
+		content, ok := firstMessage["content"].(string)
+		if ok {
+			totalTokens -= len(content) + 2
+		}
+		conversationHistory = conversationHistory[1:]
+		log.Infof("Trimming oldest message to maintain token limit, remaining tokens: %d", totalTokens)
+	}
+
+	log.Infof("Final Conversation History Order (Total Tokens: %d): %v", totalTokens, conversationHistory)
 	return conversationHistory
 }
+
+
 
 // Function to handle Groq API requests and pagination
 func chatGPT(session *discordgo.Session, channelID string, conversationHistory []map[string]interface{}) {
 	OpenAIToken := OpenAIToken
 	GroqBaseURL := "https://api.groq.com/openai/v1"
-	GroqModel := "llama-3.1-70b-versatile"
+	GroqModel := "llama-3.2-90b-text-preview"
 
 	// Add system message at the start of conversation history
 	conversationHistory = append([]map[string]interface{}{
