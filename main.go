@@ -24,6 +24,10 @@ func main() {
 	if !ok {
 		log.Fatal("Must set crypto token as env variable: CRYPTO_TOKEN")
 	}
+	appId, ok := os.LookupEnv("APP_ID")
+	if !ok {
+		log.Fatal("Must set appId as env variable: APP_ID")
+	}
 	openAIToken, ok := os.LookupEnv("OPENAI_TOKEN")
 	if !ok {
 		log.Fatal("Must set OpenAI token as env variable: OPENAI_TOKEN")
@@ -35,6 +39,7 @@ func main() {
 
 	bot.BotToken = botToken
 	bot.CryptoToken = cryptoToken
+	bot.AppId = appId
 	bot.OpenAIToken = openAIToken
 	bot.AllowedUserID = AllowedUserID
 

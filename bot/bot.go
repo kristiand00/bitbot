@@ -18,6 +18,7 @@ var (
 	OpenAIToken   string
 	CryptoToken   string
 	AllowedUserID string
+	AppId 		  string
 )
 
 func Run() {
@@ -27,12 +28,17 @@ func Run() {
 	}
 
 	discord.AddHandler(newMessage)
+	discord.AddHandler(commandHandler)
 
 	log.Info("Opening Discord connection...")
-	discord.Open()
+	err = discord.Open()
+    if err != nil {
+        log.Fatal(err)
+    }
 	defer discord.Close()
+	registerCommands(discord, AppId)
 	log.Info("BitBot is running...")
-
+	
 	// Try initializing PocketBase after Discord is connected
 	log.Info("Initializing PocketBase...")
 	pb.Init()
@@ -257,4 +263,34 @@ func handleRollCommand(session *discordgo.Session, message *discordgo.MessageCre
 			session.ChannelMessageSend(message.ChannelID, "Invalid argument. Please provide a valid number.")
 		}
 	}
+}
+
+func registerCommands(discord *discordgo.Session, appID string) {
+    cmd := &discordgo.ApplicationCommand{
+        Name:        "ping",
+        Description: "Check the bot's ping.",
+    }
+
+    _, err := discord.ApplicationCommandCreate(appID, "", cmd)
+    if err != nil {
+        log.Fatalf("Cannot create slash command: %v", err)
+    }
+}
+
+func commandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
+    if i.Type == discordgo.InteractionApplicationCommand {
+        data := i.ApplicationCommandData()
+
+        if data.Name == "ping" {
+            err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+                Type: discordgo.InteractionResponseChannelMessageWithSource,
+                Data: &discordgo.InteractionResponseData{
+                    Content: "Pong!",
+                },
+            })
+            if err != nil {
+                log.Printf("Error responding to interaction: %v", err)
+            }
+        }
+    }
 }
