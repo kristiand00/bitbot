@@ -15,7 +15,7 @@ const (
 	maxTokens         = 1500
 	maxContextTokens  = 2000
 	maxMessageTokens  = 2000
-	systemMessageText = "your name is !bit you are a discord bot, you use brief answers untill asked to elaborate or explain. You also have these commands that users can use: Available commands:!cry - Get information about cryptocurrency prices.!bit - Interact with the BitBot chatbot.!roll - Random number from 1-100 or specify a number (!roll 9001).!help - Show available commands."
+	systemMessageText = "your name is !bit you are a discord bot, you use brief answers untill asked to elaborate or explain."
 )
 
 var lastChannelID string // Track the last used channelID globally
