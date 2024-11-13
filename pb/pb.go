@@ -37,7 +37,6 @@ func Init() {
 
 func GetRecordById(collectionID string, recordID string) (*models.Record, error) {
 	// Access the PocketBase DAO and perform database operations
-	// Example: Retrieve all records from the "articles" collection
 	record, err := app.Dao().FindRecordById(collectionID, recordID)
 	if err != nil {
 		log.Error(err)
@@ -113,17 +112,17 @@ func ListServersByUserID(userID string) ([]*ServerInfo, error) {
 	}
 
 	// Log the number of records retrieved
-	log.Info("Number of records:", len(records))
+	log.Info("Number of records: %d", len(records))
 
 	// Convert records to []*ServerInfo
 	var servers []*ServerInfo
 	for _, record := range records {
 		// Log details of each record
-		log.Info("Record details:", record)
+		log.Info("Record details: %v", record)
 
 		// Print each field to check if they are set
-		log.Info("UserID:", record.Get("UserID"))
-		log.Info("ConnectionDetails:", record.Get("ConnectionDetails"))
+		log.Info("UserID: %d", record.Get("UserID"))
+		log.Info("ConnectionDetails: %v", record.Get("ConnectionDetails"))
 
 		// Convert record to ServerInfo
 		server := &ServerInfo{
