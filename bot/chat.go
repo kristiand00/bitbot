@@ -15,11 +15,20 @@ const (
 	maxTokens         = 1500
 	maxContextTokens  = 2000
 	maxMessageTokens  = 2000
-	systemMessageText = "your name is !bit you are a discord bot, you use brief answers untill asked to elaborate or explain"
+	systemMessageText = "your name is !bit you are a discord bot, you use brief answers untill asked to elaborate or explain. You also have these commands that users can use: Available commands:!cry - Get information about cryptocurrency prices.!bit - Interact with the BitBot chatbot.!roll - Random number from 1-100 or specify a number (!roll 9001).!help - Show available commands."
 )
 
+var lastChannelID string // Track the last used channelID globally
+
 func populateConversationHistory(session *discordgo.Session, channelID string, conversationHistory []map[string]interface{}) []map[string]interface{} {
-	// Retrieve recent messages from the Discord channel
+	// Reset conversationHistory if this is a new channel
+	if lastChannelID != channelID {
+		conversationHistory = nil
+		lastChannelID = channelID
+		log.Infof("New channel detected. Resetting conversation history.")
+	}
+
+	// Retrieve recent messages only from the specified channel
 	messages, err := session.ChannelMessages(channelID, 20, "", "", "")
 	if err != nil {
 		log.Error("Error retrieving channel history:", err)
@@ -30,48 +39,46 @@ func populateConversationHistory(session *discordgo.Session, channelID string, c
 	maxTokens := 1500
 	totalTokens := 0
 
-	// Calculate the token count for existing messages in history
+	// Track existing message content to prevent duplicates
+	existingContents := make(map[string]bool)
 	for _, msg := range conversationHistory {
-		content, okContent := msg["content"].(string)
-		if okContent {
+		content, ok := msg["content"].(string)
+		if ok {
+			existingContents[content] = true
 			tokens := len(content) + 2 // Account for message tokens
 			totalTokens += tokens
 		}
 	}
 
-	// Add the latest message first
-	if len(messages) > 0 {
-		latestMessage := messages[0]
-		latestTokens := len(latestMessage.Content) + 2
-		conversationHistory = append(conversationHistory, map[string]interface{}{
-			"role":    "user",
-			"content": latestMessage.Content,
-		})
-		totalTokens += latestTokens
-		log.Infof("Added latest message with tokens: %d", latestTokens)
-	}
-
-	// Process the remaining messages in reverse (newest to oldest) and add if under limit
-	for i := 1; i < len(messages); i++ {
-		message := messages[i]
+	// Process the recent messages in reverse order (newest to oldest)
+	for _, message := range messages {
+		// Skip messages older than 30 minutes
 		if time.Since(message.Timestamp) > 30*time.Minute {
-			continue // Skip messages older than 30 minutes
+			continue
 		}
 
+		// Skip if the message content already exists in conversationHistory
+		if existingContents[message.Content] {
+			continue
+		}
+
+		// Calculate tokens for the message content
 		tokens := len(message.Content) + 2
 		if totalTokens+tokens <= maxTokens {
+			// Add message to history and mark its content as added
 			conversationHistory = append([]map[string]interface{}{{
 				"role":    "user",
 				"content": message.Content,
 			}}, conversationHistory...)
 			totalTokens += tokens
+			existingContents[message.Content] = true
 			log.Infof("Adding message with tokens: %d", tokens)
 		} else {
 			break // Stop if adding the next message would exceed the max token limit
 		}
 	}
 
-	// Trim older messages if needed
+	// Trim older messages if needed to stay within maxTokens
 	for totalTokens > maxTokens && len(conversationHistory) > 1 {
 		firstMessage := conversationHistory[0]
 		content, ok := firstMessage["content"].(string)
@@ -85,6 +92,7 @@ func populateConversationHistory(session *discordgo.Session, channelID string, c
 	log.Infof("Final Conversation History Order (Total Tokens: %d): %v", totalTokens, conversationHistory)
 	return conversationHistory
 }
+
 
 
 

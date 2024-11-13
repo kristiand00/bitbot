@@ -268,7 +268,15 @@ func handleRollCommand(session *discordgo.Session, message *discordgo.MessageCre
 func registerCommands(discord *discordgo.Session, appID string) {
     cmd := &discordgo.ApplicationCommand{
         Name:        "ping",
-        Description: "Check the bot's ping.",
+        Description: "Check the bot's ping or specify something to ping.",
+        Options: []*discordgo.ApplicationCommandOption{
+            {
+                Name:        "something",
+                Description: "Specify something to ping.",
+                Type:        discordgo.ApplicationCommandOptionString, // Use the appropriate type
+                Required:    false, // Set to true if you want it to be mandatory
+            },
+        },
     }
 
     _, err := discord.ApplicationCommandCreate(appID, "", cmd)
@@ -282,10 +290,23 @@ func commandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
         data := i.ApplicationCommandData()
 
         if data.Name == "ping" {
+            // Default response
+            response := "Pong!"
+
+            // Check if the user provided the "something" option
+            for _, option := range data.Options {
+                if option.Name == "something" {
+                    // Update response if "something" was provided
+                    response = "Pong! You specified: " + option.StringValue()
+                }
+            }
+
+            // Send the response
             err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
                 Type: discordgo.InteractionResponseChannelMessageWithSource,
                 Data: &discordgo.InteractionResponseData{
-                    Content: "Pong!",
+                    Content: response,
+                    Flags:   discordgo.MessageFlagsEphemeral, // Optional: make the response ephemeral
                 },
             })
             if err != nil {
