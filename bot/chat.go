@@ -93,14 +93,11 @@ func populateConversationHistory(session *discordgo.Session, channelID string, c
 	return conversationHistory
 }
 
-
-
-
 // Function to handle Groq API requests and pagination
 func chatGPT(session *discordgo.Session, channelID string, conversationHistory []map[string]interface{}) {
 	OpenAIToken := OpenAIToken
 	GroqBaseURL := "https://api.groq.com/openai/v1"
-	GroqModel := "llama-3.2-90b-text-preview"
+	GroqModel := "llama-3.1-70b-versatile"
 
 	// Add system message at the start of conversation history
 	conversationHistory = append([]map[string]interface{}{
