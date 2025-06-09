@@ -4,7 +4,7 @@ import (
 	"bitbot/pb"
 	"fmt"
 	"math/rand"
-	"os"
+	"os" // Restoring os import
 	"os/signal"
 	"strings"
 
@@ -40,30 +40,23 @@ func Run() {
 	registerCommands(discord, AppId)
 	log.Info("BitBot is running...")
 
-	// Set GOOGLE_API_KEY environment variable for Genkit's Google AI plugin
+	// Initialize Gemini Client for chat functionalities
 	if GeminiAPIKey == "" {
 		log.Fatal("Gemini API Key (GEMINI_API_KEY) is not set in environment variables.")
 	}
-	err = os.Setenv("GOOGLE_API_KEY", GeminiAPIKey)
-	if err != nil {
-		log.Fatalf("Failed to set GOOGLE_API_KEY environment variable: %v", err)
+	log.Info("Initializing Gemini Client...")
+	if err := InitGeminiClient(GeminiAPIKey); err != nil {
+		log.Fatalf("Failed to initialize Gemini Client: %v", err)
 	}
-	log.Info("GOOGLE_API_KEY environment variable set.")
-
-	// Initialize Genkit for chat functionalities
-	log.Info("Initializing Genkit and Gemini Model...")
-	if err := InitGenkit(); err != nil { // InitGenkit is in the same 'bot' package, defined in chat.go
-		log.Fatalf("Failed to initialize Genkit: %v", err)
-	}
-	log.Info("Genkit initialized successfully.")
+	log.Info("Gemini Client initialized successfully.")
 
 	// Try initializing PocketBase after Discord is connected
 	log.Info("Initializing PocketBase...")
 	pb.Init()
 	log.Info("Exiting... press CTRL + c again")
 
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt)
+	c := make(chan os.Signal, 1) // os.Signal still needs "os"
+	signal.Notify(c, os.Interrupt) // os.Interrupt still needs "os"
 	<-c
 }
 
