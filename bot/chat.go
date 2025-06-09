@@ -1,218 +1,198 @@
 package bot
 
 import (
-	"context" // Added
-	"fmt"     // Added
-	"time"    // Keep: used by populateConversationHistory
+	"context"
+	"fmt"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/charmbracelet/log"
-
-	"github.com/firebase/genkit/go/genkit"
-	"github.com/firebase/genkit/go/plugins/googleai" // For Gemini
+	"github.com/google/generative-ai-go/genai" // Correct SDK import
+	"google.golang.org/api/option"
 )
 
 const (
-	maxTokens         = 1500 // Preserved
-	maxContextTokens  = 2000 // Preserved (though not directly used by new chatGPT, kept for now)
-	maxMessageTokens  = 2000 // Preserved (though not directly used by new chatGPT, kept for now)
-	systemMessageText = "your name is !bit you are a discord bot, you use brief answers untill asked to elaborate or explain." // Preserved
+	systemMessageText = "your name is !bit you are a discord bot, you use brief answers untill asked to elaborate or explain."
 )
 
-var lastChannelID string // Track the last used channelID globally - Preserved
-var geminiModel *genkit.Model // Added
+var (
+	lastChannelID     string
+	geminiClient      *genai.Client // Corrected type
+	geminiChatModel   *genai.GenerativeModel
+)
 
-// InitGenkit initializes the Genkit library and Gemini model.
-// It will be called from bot.go after the API key is loaded.
-// Assumes GOOGLE_API_KEY environment variable will be set by the caller using bot.GeminiAPIKey.
-func InitGenkit() error {
-	// Initialize the Google AI plugin for Genkit.
-	// This typically relies on the GOOGLE_API_KEY environment variable.
-	// Ensure bot.GeminiAPIKey is set to os.Setenv("GOOGLE_API_KEY", bot.GeminiAPIKey) before this.
-	if err := googleai.Init(context.Background()); err != nil {
-		log.Errorf("Failed to initialize Google AI plugin for Genkit: %v", err)
-		return fmt.Errorf("failed to initialize Google AI plugin: %w", err)
+func InitGeminiClient(apiKey string) error {
+	if apiKey == "" {
+		return fmt.Errorf("Gemini API key is not provided")
 	}
-
-	geminiModel = googleai.Model("gemini-1.5-flash-latest")
-	if geminiModel == nil {
-		log.Error("Failed to get Gemini model 'gemini-1.5-flash-latest' from Genkit.")
-		return fmt.Errorf("failed to get model 'gemini-1.5-flash-latest'")
+	ctx := context.Background()
+	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey)) // Corrected function
+	if err != nil {
+		log.Errorf("Failed to create Generative Client: %v", err)
+		return fmt.Errorf("failed to create Generative Client: %w", err)
 	}
-
-	log.Info("Genkit and Gemini model 'gemini-1.5-flash-latest' initialized successfully via googleai plugin.")
+	geminiClient = client
+	geminiChatModel = geminiClient.GenerativeModel("gemini-1.5-flash-latest")
+	geminiChatModel.SystemInstruction = &genai.Content{
+		Parts: []genai.Part{genai.Text(systemMessageText)},
+	}
+	log.Info("Generative Client initialized successfully with model 'gemini-1.5-flash-latest'.")
 	return nil
 }
 
 func populateConversationHistory(session *discordgo.Session, channelID string, conversationHistory []map[string]interface{}) []map[string]interface{} {
-	// Reset conversationHistory if this is a new channel
 	if lastChannelID != channelID {
 		conversationHistory = nil
 		lastChannelID = channelID
 		log.Infof("New channel detected. Resetting conversation history.")
 	}
-
-	// Retrieve recent messages only from the specified channel
-	messages, err := session.ChannelMessages(channelID, 20, "", "", "")
+	discordMessages, err := session.ChannelMessages(channelID, 20, "", "", "")
 	if err != nil {
 		log.Error("Error retrieving channel history:", err)
 		return conversationHistory
 	}
-
-	// Set max tokens and initialize counters
-	// Note: maxTokens constant is used directly in the new chatGPT, this local variable is fine for this func
-	maxTokensInHistory := 1500 // Using a local variable to avoid conflict if global maxTokens is used differently
+	maxTokensInHistory := 1500
 	totalTokens := 0
-
-	// Track existing message content to prevent duplicates
 	existingContents := make(map[string]bool)
 	for _, msg := range conversationHistory {
 		content, ok := msg["content"].(string)
 		if ok {
 			existingContents[content] = true
-			// Simple token estimation (chars), real tokenization is more complex
 			tokens := len(content)
 			totalTokens += tokens
 		}
 	}
-
-	// Process the recent messages in reverse order (newest to oldest)
-	// to build up to the token limit with the most recent messages.
 	var tempHistory []map[string]interface{}
-	for i := len(messages) - 1; i >= 0; i-- {
-		message := messages[i]
-		// Skip messages older than 30 minutes
+	for i := len(discordMessages) - 1; i >= 0; i-- {
+		message := discordMessages[i]
 		if time.Since(message.Timestamp) > 30*time.Minute {
 			continue
 		}
-
-		// Skip if the message content already exists in conversationHistory (from previous runs or this session)
 		if existingContents[message.Content] {
 			continue
 		}
-
-		// Skip bot's own messages by checking author (if session.State.User is populated and matches message.Author)
-		// or by checking if the message content is one of the bot's known responses (harder).
-		// For now, we assume populateConversationHistory is called with user messages.
-		// If bot messages are in `messages` from discord, they will be added with "user" role here.
-
-		tokens := len(message.Content) // Simple token estimation
+		if session.State != nil && session.State.User != nil && message.Author.ID == session.State.User.ID {
+			continue
+		}
+		tokens := len(message.Content)
 		if totalTokens+tokens <= maxTokensInHistory {
 			tempHistory = append(tempHistory, map[string]interface{}{
-				"role":    "user", // All messages from Discord history are treated as "user" for now
+				"role":    "user",
 				"content": message.Content,
 			})
 			totalTokens += tokens
-			existingContents[message.Content] = true // Mark as added to avoid re-adding if it appeared multiple times in history
+			existingContents[message.Content] = true
 		} else {
-			// If adding this message would exceed, we might have space for a smaller one if we continue,
-			// but typically we want the most recent contiguous block. So, break.
 			break
 		}
 	}
-    // Reverse tempHistory to get chronological order (oldest to newest) before prepending to main history
-    for i := len(tempHistory)/2 - 1; i >= 0; i-- {
-        opp := len(tempHistory) - 1 - i
-        tempHistory[i], tempHistory[opp] = tempHistory[opp], tempHistory[i]
+    for i, j := 0, len(tempHistory)-1; i < j; i, j = i+1, j-1 {
+        tempHistory[i], tempHistory[j] = tempHistory[j], tempHistory[i]
     }
-    conversationHistory = append(tempHistory, conversationHistory...)
-
-
-	// Final trim if somehow totalTokens exceeded (e.g. initial conversationHistory was large)
-    // This part ensures existing history + new additions don't exceed the limit.
+    conversationHistory = append(conversationHistory, tempHistory...)
 	finalTrimmedHistory := []map[string]interface{}{}
 	currentTotalTokens := 0
-    // Iterate from newest to oldest to keep most recent messages
     for i := len(conversationHistory) - 1; i >= 0; i-- {
         msg := conversationHistory[i]
         content, ok := msg["content"].(string)
-        if !ok {
-            continue // Should not happen if history is well-formed
-        }
+        if !ok { continue }
         tokens := len(content)
         if currentTotalTokens+tokens <= maxTokensInHistory {
-            // Prepend to keep chronological order in finalTrimmedHistory
             finalTrimmedHistory = append([]map[string]interface{}{msg}, finalTrimmedHistory...)
             currentTotalTokens += tokens
         } else {
-            // History (from newest) already meets token limit
             break
         }
     }
+     for i, j := 0, len(finalTrimmedHistory)-1; i < j; i, j = i+1, j-1 {
+        finalTrimmedHistory[i], finalTrimmedHistory[j] = finalTrimmedHistory[j], finalTrimmedHistory[i]
+    }
     conversationHistory = finalTrimmedHistory
-	log.Infof("Final Conversation History (Total Estimated Tokens: %d): %d messages", currentTotalTokens, len(conversationHistory))
+	log.Infof("Final Conversation History (Tokens: %d): %d messages", currentTotalTokens, len(conversationHistory))
 	return conversationHistory
 }
 
 func chatGPT(session *discordgo.Session, channelID string, conversationHistory []map[string]interface{}) {
-	if geminiModel == nil {
-		log.Error("Gemini model is not initialized. Call InitGenkit first.")
-		_, err := session.ChannelMessageSend(channelID, "Sorry, the chat service is not properly configured.")
-		if err != nil {
-			log.Error("Error sending Discord message for uninitialized model: ", err)
-		}
+	if geminiClient == nil || geminiChatModel == nil {
+		log.Error("Gemini client or model is not initialized.")
+		_, _ = session.ChannelMessageSend(channelID, "Sorry, the chat service is not properly configured.")
 		return
 	}
 
-	// Convert conversationHistory to genkit.MessageHistory format
-	messages := []*genkit.Message{
-		genkit.NewSystemMessage(systemMessageText), // systemMessageText is a const in this file
-	}
-	for _, msgData := range conversationHistory {
-		content, okContent := msgData["content"].(string)
-		roleStr, okRole := msgData["role"].(string)
+	ctx := context.Background()
+	// chatContents changed from []*genai.Content to []genai.Part
+	chatParts := []genai.Part{}
+	// System instruction is now set globally for the model,
+	// but chat history needs to be passed as Parts.
+	// The genai.Content struct has Role and Parts.
+	// We will build a history of genai.Part, assuming the roles are handled by the ChatSession or the way parts are added.
+	// For direct GenerateContent, we might need to construct genai.Content items if roles need to be explicit per message.
+	// However, GenerateContent on GenerativeModel takes ...Part, implying a sequence of Parts.
+	// Let's adapt to passing parts directly. If conversation needs explicit roles for each message part,
+	// this might need further adjustment based on how genai.GenerativeModel.GenerateContent processes parts.
+	// The documentation for GenerativeModel.GenerateContent(ctx, parts ...Part) suggests it takes a sequence of parts.
+	// For a chat-like structure, this usually means alternating user/model content.
+	// The current structure of conversationHistory (map[string]interface{}{"role": ..., "content": ...})
+	// will be converted to a flat list of genai.Part. This might lose explicit role information if not handled by the SDK implicitly.
+	// Let's assume for now that the SDK handles alternating roles or that the prior setup of SystemInstruction covers the bot's role.
+	// This is a potential area for bugs if the SDK expects genai.Content with roles for chat history.
+	// The ChatSession object in the SDK is designed for this, but we are using GenerateContent directly.
 
-		if !okContent || !okRole {
-			log.Warnf("Skipping message in history due to missing content or role: %+v", msgData)
-			continue
-		}
+	var currentChatSession *genai.ChatSession
+	if geminiChatModel != nil {
+		currentChatSession = geminiChatModel.StartChat()
+		currentChatSession.History = []*genai.Content{} // Initialize history
 
-		// populateConversationHistory currently only adds "user" roles from Discord messages.
-		if roleStr == "user" {
-			messages = append(messages, genkit.NewUserMessage(content))
-		} else if roleStr == "assistant" || roleStr == "model" {
-			// This case handles if the bot's own previous replies were somehow stored in conversationHistory
-			messages = append(messages, genkit.NewModelMessage(content))
-		}
-		// Other roles (like "system" from history) are ignored as we add one definitive system message.
-	}
-
-	// Create a request for Genkit
-	req := &genkit.GenerateRequest{
-		Model:    geminiModel,
-		Messages: messages,
-		Config: &genkit.GenerationConfig{
-			MaxOutputTokens: int32(maxTokens), // maxTokens is a const (1500) in this file
-			// Add other config like Temperature if needed: Temperature: 0.7,
-		},
-	}
-
-	// Indicate bot is typing
-	_ = session.ChannelTyping(channelID)
-
-	// Generate content using Genkit
-	resp, err := genkit.Generate(context.Background(), req)
-	if err != nil {
-		log.Errorf("Failed to generate content with Genkit/Gemini: %v", err)
-		_, sendErr := session.ChannelMessageSend(channelID, "Sorry, I encountered an error trying to get a response.")
-		if sendErr != nil {
-			log.Error("Error sending Discord error message: ", sendErr)
-		}
-		return
-	}
-
-	if len(resp.Candidates) > 0 && resp.Candidates[0].Message != nil && resp.Candidates[0].Message.Content != "" {
-		gptResponse := resp.Candidates[0].Message.Content
-		_, err := session.ChannelMessageSend(channelID, gptResponse)
-		if err != nil {
-			log.Error("Error sending Genkit response to Discord:", err)
-			return
+		for _, msgData := range conversationHistory {
+			content, okContent := msgData["content"].(string)
+			roleStr, okRole := msgData["role"].(string)
+			if !okContent || !okRole {
+				log.Warnf("Skipping message in history: missing content or role.")
+				continue
+			}
+			// Add to ChatSession history
+			currentChatSession.History = append(currentChatSession.History, &genai.Content{Role: roleStr, Parts: []genai.Part{genai.Text(content)}})
+			// Also prepare parts for GenerateContent if needed, though SendMessage from ChatSession is preferred.
+			chatParts = append(chatParts, genai.Text(content))
 		}
 	} else {
-		log.Warn("Received no content or empty message from Genkit/Gemini.")
-		_, sendErr := session.ChannelMessageSend(channelID, "Sorry, I didn't receive a response. You could try rephrasing.")
-		if sendErr != nil {
-			log.Error("Error sending Discord 'no response' message: ", sendErr)
+		log.Error("geminiChatModel is nil, cannot start chat session or prepare history.")
+		_, _ = session.ChannelMessageSend(channelID, "Sorry, the chat model is not available.")
+		return
+	}
+
+	if len(currentChatSession.History) == 0 {
+		log.Info("Conversation history is empty for ChatSession. Replying with greeting.")
+		_, _ = session.ChannelMessageSend(channelID, "Hello! How can I help you today? (History was empty for ChatSession)")
+		return
+	}
+
+	_ = session.ChannelTyping(channelID)
+
+	// Use ChatSession's SendMessage instead of direct GenerateContent for chat
+	resp, err := currentChatSession.SendMessage(ctx, chatParts[len(chatParts)-1]) // Send only the last message part
+
+	// If not using ChatSession, GenerateContent would be:
+	// resp, err := geminiChatModel.GenerateContent(ctx, chatParts...)
+	// The switch to ChatSession.SendMessage is a significant change.
+	// It expects only the new message parts, as history is managed by the session.
+
+	if err != nil {
+		log.Errorf("Failed to generate content with Gemini: %v", err)
+		_, _ = session.ChannelMessageSend(channelID, "Sorry, I encountered an error trying to get a response.")
+		return
+	}
+
+	if resp != nil && len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil && len(resp.Candidates[0].Content.Parts) > 0 {
+		if textPart, ok := resp.Candidates[0].Content.Parts[0].(genai.Text); ok {
+			gptResponse := string(textPart)
+			_, _ = session.ChannelMessageSend(channelID, gptResponse)
+		} else {
+			log.Warn("Gemini response part is not genai.Text.")
+			_, _ = session.ChannelMessageSend(channelID, "Sorry, I received an unexpected response format.")
 		}
+	} else {
+		log.Warn("Received no content or empty message from Gemini.")
+		_, _ = session.ChannelMessageSend(channelID, "Sorry, I didn't receive a response. You could try rephrasing.")
 	}
 }
