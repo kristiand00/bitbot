@@ -28,9 +28,9 @@ func main() {
 	if !ok {
 		log.Fatal("Must set appId as env variable: APP_ID")
 	}
-	openAIToken, ok := os.LookupEnv("OPENAI_TOKEN")
+	geminiAPIKey, ok := os.LookupEnv("GEMINI_API_KEY")
 	if !ok {
-		log.Fatal("Must set OpenAI token as env variable: OPENAI_TOKEN")
+		log.Fatal("Must set Gemini API key as env variable: GEMINI_API_KEY")
 	}
 	AllowedUserID, ok := os.LookupEnv("ADMIN_DISCORD_ID")
 	if !ok {
@@ -40,7 +40,7 @@ func main() {
 	bot.BotToken = botToken
 	bot.CryptoToken = cryptoToken
 	bot.AppId = appId
-	bot.OpenAIToken = openAIToken
+	bot.GeminiAPIKey = geminiAPIKey
 	bot.AllowedUserID = AllowedUserID
 
 	bot.Run()
