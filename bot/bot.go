@@ -14,7 +14,7 @@ import (
 
 var (
 	BotToken      string
-	OpenAIToken   string
+	GeminiAPIKey  string
 	CryptoToken   string
 	AllowedUserID string
 	AppId         string
@@ -39,6 +39,23 @@ func Run() {
 	log.Info("Registering commands...")
 	registerCommands(discord, AppId)
 	log.Info("BitBot is running...")
+
+	// Set GOOGLE_API_KEY environment variable for Genkit's Google AI plugin
+	if GeminiAPIKey == "" {
+		log.Fatal("Gemini API Key (GEMINI_API_KEY) is not set in environment variables.")
+	}
+	err = os.Setenv("GOOGLE_API_KEY", GeminiAPIKey)
+	if err != nil {
+		log.Fatalf("Failed to set GOOGLE_API_KEY environment variable: %v", err)
+	}
+	log.Info("GOOGLE_API_KEY environment variable set.")
+
+	// Initialize Genkit for chat functionalities
+	log.Info("Initializing Genkit and Gemini Model...")
+	if err := InitGenkit(); err != nil { // InitGenkit is in the same 'bot' package, defined in chat.go
+		log.Fatalf("Failed to initialize Genkit: %v", err)
+	}
+	log.Info("Genkit initialized successfully.")
 
 	// Try initializing PocketBase after Discord is connected
 	log.Info("Initializing PocketBase...")
