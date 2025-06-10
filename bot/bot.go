@@ -79,14 +79,13 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 
 	isPrivateChannel := message.GuildID == ""
 
-	userID := message.Author.ID
-	conversationHistory := conversationHistoryMap[userID]
-
-	channelID := message.ChannelID
-	conversationHistory = populateConversationHistory(discord, channelID, conversationHistory)
+	// The userID and conversationHistoryMap are no longer used here for chatGPT history.
+	// channelID := message.ChannelID // This variable is not used after removing populateConversationHistory
 
 	if strings.HasPrefix(message.Content, "!bit") || isPrivateChannel {
-		chatGPT(discord, message.ChannelID, conversationHistory)
+		// Call chatGPT with the Discord session, channel ID, and the message content directly.
+		// History is now managed within chatGPT using a global session and fetching from Discord if needed.
+		chatGPT(discord, message.ChannelID, message.Content)
 	}
 }
 
