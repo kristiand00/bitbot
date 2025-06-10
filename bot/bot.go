@@ -2,12 +2,12 @@ package bot
 
 import (
 	"bitbot/pb"
+	"context"         // For GenAI client
+	"encoding/binary" // For PCM to byte conversion
+	"errors"          // For error handling
 	"fmt"
 	"math/rand"
-	"context"          // For GenAI client
-	"encoding/binary"  // For PCM to byte conversion
-	"errors"           // For error handling
-	"os"               // Restoring os import
+	"os" // Restoring os import
 	"os/signal"
 	"strings"
 	"time" // Added for timeout in receiveOpusPackets
@@ -18,7 +18,7 @@ import (
 	"io"                           // For io.EOF in GenAI receive
 	"sync"                         // For RWMutex
 
-	"github.com/pion/opus" // Opus decoding (switched from layeh/gopus)
+	"github.com/pion/opus"    // Opus decoding (switched from layeh/gopus)
 	"github.com/zaf/resample" // For resampling audio
 
 	// "github.com/google/generative-ai-go/genai" // Old GenAI import
@@ -96,7 +96,7 @@ var userVoiceSessions map[string]*UserVoiceSession
 var userVoiceSessionsMutex = sync.RWMutex{}
 
 type UserVoiceSession struct {
-	GenAISession      *genai.LiveSession // Updated to LiveSession
+	GenAISession      *genai.LiveSession // Changed from LiveSession to Session
 	UserID            string
 	GuildID           string
 	DiscordSession    *discordgo.Session
@@ -269,6 +269,9 @@ func receiveOpusPackets(vc *discordgo.VoiceConnection, guildID string, originalC
 		select {
 		case packet, ok := <-vc.OpusRecv:
 			var currentUserID string // Declare currentUserID
+			// bytePcmBuffer for pion/opus Decode method which expects []byte
+			bytePcmBuffer := make([]byte, pcmFrameSize*2) // *2 because pcmFrameSize is in int16 samples
+
 			if !ok {
 				log.Warnf("OpusRecv channel closed for guild %s. Exiting receiver goroutine.", guildID)
 				userVoiceSessionsMutex.Lock()
@@ -297,13 +300,31 @@ func receiveOpusPackets(vc *discordgo.VoiceConnection, guildID string, originalC
 				continue
 			}
 
-			n, err := decoder.Decode(packet.Opus, pcmBuffer)
+			// Use bytePcmBuffer for decoding. Decode returns bandwidth, stereo status, and error.
+			_, _, err := decoder.Decode(packet.Opus, bytePcmBuffer)
 			if err != nil {
 				log.Errorf("pion/opus failed to decode Opus packet for SSRC %d, guild %s: %v", packet.SSRC, guildID, err)
 				continue
 			}
 
-			pcmDataForGenAI := make([]int16, n)
+			// Convert bytePcmBuffer back to pcmBuffer (int16)
+			// n will be the number of int16 samples successfully read.
+			var n int
+			for i := 0; i < pcmFrameSize; i++ {
+				if (i*2 + 1) < len(bytePcmBuffer) {
+					pcmBuffer[i] = int16(binary.LittleEndian.Uint16(bytePcmBuffer[i*2 : i*2+2]))
+					n = i + 1 // Count successfully converted samples
+				} else {
+					log.Warnf("Decoded byte buffer smaller than expected for pcmFrameSize. SSRC %d, guild %s. Read %d samples.", packet.SSRC, guildID, n)
+					break
+				}
+			}
+			if n == 0 && pcmFrameSize > 0 { // If nothing was decoded and we expected samples
+				log.Warnf("No PCM samples decoded from Opus packet. SSRC %d, guild %s", packet.SSRC, guildID)
+				continue
+			}
+
+			pcmDataForGenAI := make([]int16, n) // Use the actual number of decoded samples
 			copy(pcmDataForGenAI, pcmBuffer[:n])
 
 			// Unconditionally retrieve UserID by SSRC
@@ -342,9 +363,14 @@ func receiveOpusPackets(vc *discordgo.VoiceConnection, guildID string, originalC
 			}
 			// Assuming RealtimeInput is now a struct literal with an Audio field
 			// and directly under genai.
-			realtimeInput := &genai.RealtimeInput{Audio: mediaBlob} // Reverted to genai.RealtimeInput
-
-			errSend := userSession.GenAISession.SendRealtimeInput(realtimeInput) // Method name might change
+			// realtimeInput := genai.LiveRealtimeInput{Audio: mediaBlob} // Changed to LiveRealtimeInput
+			// errSend := userSession.GenAISession.SendRealtimeInput(realtimeInput) // Method name might change
+			req := &genai.LiveRequest{
+				Content: &genai.Content{
+					Parts: []genai.Part{mediaBlob},
+				},
+			}
+			errSend := userSession.GenAISession.Send(context.Background(), req)
 			if errSend != nil {
 				log.Errorf("receiveOpusPackets: SendRealtimeInput failed for user %s: %v", currentUserID, errSend)
 			}
@@ -373,25 +399,17 @@ func establishAndManageVoiceSession(userID string, guildID string, dgSession *di
 		modelName := AudioModelName
 
 		// Types are now directly under 'genai' package.
-		connectConfig := &genai.LiveConnectConfig{ // Reverted to genai.LiveConnectConfig
-			ResponseModalities: []genai.Modality{genai.ModalityAudio}, // Reverted to genai.Modality
-			SpeechConfig: &genai.SpeechConfig{ // Reverted to genai.SpeechConfig
-				AudioEncoding:   "LINEAR16", // This might be an enum like genai.AudioEncodingLinear16
-				SampleRateHertz: 24000,
-			},
-			ContextWindowCompression: &genai.ContextWindowCompressionConfig{ // Reverted to genai.ContextWindowCompressionConfig
-				SlidingWindow: &genai.SlidingWindow{}, // Reverted to genai.SlidingWindow
+		connectConfig := &genai.LiveConnectConfig{
+			ResponseModalities: []genai.Modality{genai.ModalityAudio},
+			SpeechConfig:       &genai.SpeechConfig{}, // Removed AudioEncoding and SampleRateHertz
+			ContextWindowCompression: &genai.ContextWindowCompressionConfig{
+				SlidingWindow: &genai.SlidingWindow{},
 			},
 		}
-		log.Infof("Attempting to connect to GenAI Live with model: %s, output config: 24kHz LINEAR16", modelName)
+		log.Infof("Attempting to connect to GenAI Live with model: %s, output config: (using SDK defaults for speech)", modelName)
 
-		// The connection method might change.
-		// Assuming geminiClient is already updated to the new SDK's client type.
-		// Placeholder: geminiClient.StartLiveChat(ctx, modelName, connectConfig) or similar.
-		// For now, keeping a structure similar to the original if the exact method is unknown.
-		// This part might need further adjustment based on the actual new SDK.
-		liveService := genai.NewLiveClient(geminiClient) // This is a guess, might be geminiClient.Live(ctx) or similar
-		liveSession, err := liveService.Connect(ctx, modelName, connectConfig) // Or liveClient.StartLiveChat(...)
+		// Use geminiClient.Live.Connect directly
+		liveSession, err := geminiClient.Live.Connect(ctx, modelName, connectConfig)
 		if err != nil {
 			log.Errorf("Failed to connect to GenAI Live model '%s' for user %s, guild %s: %v", modelName, userID, guildID, err)
 			return nil, err
@@ -447,7 +465,7 @@ func sendAudioToDiscord(guildID string, userID string, pcmData []byte) {
 		return
 	}
 
-	encoder, err := opus.NewEncoder(48000, 1, opus.AppVoIP)
+	encoder, err := opus.NewEncoder(48000, 1, opus.ApplicationVoIP)
 	if err != nil {
 		log.Errorf("Failed to create Opus encoder for guild %s: %v", guildID, err)
 		return
@@ -656,33 +674,35 @@ func receiveAudioFromGenAI(userSession *UserVoiceSession) {
 
 		modelRespondedWithAudio := false
 		if msg != nil {
-			if msg.ServerContent != nil && msg.ServerContent.GetModelTurn() != nil {
-				modelTurn := msg.ServerContent.GetModelTurn()
+			// Access ModelTurn directly and check if ServerContent itself is nil first
+			if msg.ServerContent != nil && msg.ServerContent.ModelTurn != nil {
+				modelTurn := msg.ServerContent.ModelTurn // Changed GetModelTurn() to direct field access
 				for _, part := range modelTurn.Parts {
-					if mediaPart := part.GetMedia(); mediaPart != nil {
-						if audioBytes := mediaPart.GetAudio(); audioBytes != nil && len(audioBytes) > 0 {
-							log.Infof("Received audio data blob from GenAI for user %s. MIME: %s, Size: %d bytes.", userID, mediaPart.GetMIMEType(), len(audioBytes))
-							go processAndSendDiscordAudioResponse(dgSession, guildID, userID, audioBytes, 24000)
+					// Check for InlineData for audio, and Text for potential text parts
+					if part.InlineData != nil && strings.HasPrefix(part.InlineData.MIMEType, "audio/") {
+						audioBytes := part.InlineData.Data
+						if len(audioBytes) > 0 {
+							log.Infof("Received audio data blob from GenAI for user %s. MIME: %s, Size: %d bytes.", userID, part.InlineData.MIMEType, len(audioBytes))
+							go processAndSendDiscordAudioResponse(dgSession, guildID, userID, audioBytes, 24000) // Assuming 24000Hz output
 							modelRespondedWithAudio = true
-							break
+							break // from inner loop over parts
 						}
+					} else if textVal := part.Text; textVal != "" { // Using direct field access for Text
+						// Handle potential text parts if mixed modality is possible or for debugging
+						log.Debugf("Received text part from GenAI audio stream for user %s: %s", userID, textVal)
 					}
 				}
 				if !modelRespondedWithAudio {
-					log.Warnf("GenAI ModelTurn for user %s (audio expected) had parts, but no parsable audio/media part found.", userID)
+					log.Warnf("GenAI ModelTurn for user %s (audio expected) had parts, but no audio/media part with InlineData found.", userID)
 				}
-			} else if msg.Error != nil {
-				log.Errorf("GenAI server sent an error in audio stream for user %s: code %d, message: %s", userID, msg.Error.GetCode(), msg.Error.GetMessage())
-				if dgSession != nil && originalChannelID != "" {
-					fallbackMsg := fmt.Sprintf("Sorry <@%s>, I encountered an error while generating a voice response: %s", userID, msg.Error.GetMessage())
-					_, sendErr := dgSession.ChannelMessageSend(originalChannelID, fallbackMsg)
-					if sendErr != nil {
-						log.Errorf("Failed to send error fallback message for user %s to channel %s: %v", userID, originalChannelID, sendErr)
-					}
-				}
-			} else {
-				log.Warnf("Received GenAI message for user %s (audio expected) with no useful ServerContent or Error. Msg: %+v", userID, msg)
+				// Removed the msg.Error block, error is handled from Receive() call directly.
+				// The GenAI library typically surfaces errors through the 'err' return of Receive().
+				// If specific error codes/messages were previously on msg.Error, they might be in err now, or logged by the SDK.
+			} else if msg.ServerContent == nil { // If there's no ServerContent and no error from Receive(), it's unusual.
+				log.Warnf("Received GenAI message for user %s (audio expected) with no ServerContent and no error from Receive(). Msg: %+v", userID, msg)
 			}
+			// If ServerContent is not nil, but ModelTurn is nil, it might be another type of message (e.g. interim results if enabled)
+			// For now, we are only interested in ModelTurn for audio.
 		}
 	}
 }
@@ -743,12 +763,16 @@ func processAndSendDiscordAudioResponse(dgSession *discordgo.Session, guildID st
 	pcmInt16Output := make([]int16, len(pcmFloat64AtTargetRate))
 	for i, s := range pcmFloat64AtTargetRate {
 		val := s * 32767.0
-		if val > 32767.0 { val = 32767.0 }
-		if val < -32768.0 { val = -32768.0 }
+		if val > 32767.0 {
+			val = 32767.0
+		}
+		if val < -32768.0 {
+			val = -32768.0
+		}
 		pcmInt16Output[i] = int16(val)
 	}
 
-	encoder, err := opus.NewEncoder(discordTargetSampleRate, 1, opus.AppVoIP)
+	encoder, err := opus.NewEncoder(discordTargetSampleRate, 1, opus.ApplicationVoIP)
 	if err != nil {
 		log.Errorf("Failed to create Opus encoder for TTS response (user %s, guild %s): %v", userID, guildID, err)
 		return
