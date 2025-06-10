@@ -2,7 +2,7 @@
 FROM golang:1.24.1-alpine AS builder
 
 # Set necessary environment variables for building
-ENV CGO_ENABLED=0
+ENV CGO_ENABLED=1 # Required for gopus
 ENV GOOS=linux
 ENV GOARCH=amd64
 
@@ -10,6 +10,9 @@ WORKDIR /app
 
 # Copy go.mod and go.sum first to leverage Docker cache
 COPY go.mod go.sum ./
+# Install build-time dependencies for CGO (if pion/opus uses it)
+# opus-dev is removed as pion/opus might be pure Go or self-contained CGo.
+RUN apk add --no-cache gcc musl-dev
 RUN go mod download
 RUN go mod verify
 
@@ -22,6 +25,10 @@ RUN go build -ldflags="-w -s" -o /app/bitbot ./main.go
 
 # --- Final Stage ---
 FROM alpine:latest
+
+# Install run-time dependencies
+# opus is needed by pion/opus (dynamic linking)
+RUN apk add --no-cache opus
 
 # Create a non-root user and group
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
