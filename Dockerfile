@@ -12,7 +12,8 @@ WORKDIR /app
 COPY go.mod go.sum ./
 # Install build-time dependencies for CGO (if pion/opus uses it)
 # opus-dev is removed as pion/opus might be pure Go or self-contained CGo.
-RUN apk add --no-cache gcc musl-dev
+# pkgconfig and sox-dev are added for github.com/zaf/resample
+RUN apk add --no-cache gcc musl-dev pkgconfig sox-dev
 RUN go mod download
 RUN go mod verify
 
@@ -28,7 +29,8 @@ FROM alpine:latest
 
 # Install run-time dependencies
 # opus is needed by pion/opus (dynamic linking)
-RUN apk add --no-cache opus
+# sox (libsoxr) is needed by github.com/zaf/resample
+RUN apk add --no-cache opus sox
 
 # Create a non-root user and group
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
