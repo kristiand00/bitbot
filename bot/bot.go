@@ -2,12 +2,12 @@ package bot
 
 import (
 	"bitbot/pb"
+	"context"         // For GenAI client
+	"encoding/binary" // For PCM to byte conversion
+	"errors"          // For error handling
 	"fmt"
 	"math/rand"
-	"context"          // For GenAI client
-	"encoding/binary"  // For PCM to byte conversion
-	"errors"           // For error handling
-	"os"               // Restoring os import
+	"os" // Restoring os import
 	"os/signal"
 	"strings"
 	"time" // Added for timeout in receiveOpusPackets
@@ -18,7 +18,7 @@ import (
 	"io"                           // For io.EOF in GenAI receive
 	"sync"                         // For RWMutex
 
-	"github.com/pion/opus" // Opus decoding (switched from layeh/gopus)
+	"github.com/pion/opus"    // Opus decoding (switched from layeh/gopus)
 	"github.com/zaf/resample" // For resampling audio
 
 	// "github.com/google/generative-ai-go/genai" // Old GenAI import
@@ -96,7 +96,7 @@ var userVoiceSessions map[string]*UserVoiceSession
 var userVoiceSessionsMutex = sync.RWMutex{}
 
 type UserVoiceSession struct {
-	GenAISession      *genai.Session // Changed from LiveSession to Session
+	GenAISession      *genai.LiveSession // Changed from LiveSession to Session
 	UserID            string
 	GuildID           string
 	DiscordSession    *discordgo.Session
@@ -324,7 +324,6 @@ func receiveOpusPackets(vc *discordgo.VoiceConnection, guildID string, originalC
 				continue
 			}
 
-
 			pcmDataForGenAI := make([]int16, n) // Use the actual number of decoded samples
 			copy(pcmDataForGenAI, pcmBuffer[:n])
 
@@ -364,9 +363,14 @@ func receiveOpusPackets(vc *discordgo.VoiceConnection, guildID string, originalC
 			}
 			// Assuming RealtimeInput is now a struct literal with an Audio field
 			// and directly under genai.
-			realtimeInput := genai.LiveRealtimeInput{Audio: mediaBlob} // Changed to LiveRealtimeInput
-
-			errSend := userSession.GenAISession.SendRealtimeInput(realtimeInput) // Method name might change
+			// realtimeInput := genai.LiveRealtimeInput{Audio: mediaBlob} // Changed to LiveRealtimeInput
+			// errSend := userSession.GenAISession.SendRealtimeInput(realtimeInput) // Method name might change
+			req := &genai.LiveRequest{
+				Content: &genai.Content{
+					Parts: []genai.Part{mediaBlob},
+				},
+			}
+			errSend := userSession.GenAISession.Send(context.Background(), req)
 			if errSend != nil {
 				log.Errorf("receiveOpusPackets: SendRealtimeInput failed for user %s: %v", currentUserID, errSend)
 			}
@@ -461,7 +465,7 @@ func sendAudioToDiscord(guildID string, userID string, pcmData []byte) {
 		return
 	}
 
-	encoder, err := opus.NewEncoder(48000, 1, opus.AppVoIP)
+	encoder, err := opus.NewEncoder(48000, 1, opus.ApplicationVoIP)
 	if err != nil {
 		log.Errorf("Failed to create Opus encoder for guild %s: %v", guildID, err)
 		return
@@ -691,9 +695,9 @@ func receiveAudioFromGenAI(userSession *UserVoiceSession) {
 				if !modelRespondedWithAudio {
 					log.Warnf("GenAI ModelTurn for user %s (audio expected) had parts, but no audio/media part with InlineData found.", userID)
 				}
-			// Removed the msg.Error block, error is handled from Receive() call directly.
-			// The GenAI library typically surfaces errors through the 'err' return of Receive().
-			// If specific error codes/messages were previously on msg.Error, they might be in err now, or logged by the SDK.
+				// Removed the msg.Error block, error is handled from Receive() call directly.
+				// The GenAI library typically surfaces errors through the 'err' return of Receive().
+				// If specific error codes/messages were previously on msg.Error, they might be in err now, or logged by the SDK.
 			} else if msg.ServerContent == nil { // If there's no ServerContent and no error from Receive(), it's unusual.
 				log.Warnf("Received GenAI message for user %s (audio expected) with no ServerContent and no error from Receive(). Msg: %+v", userID, msg)
 			}
@@ -759,12 +763,16 @@ func processAndSendDiscordAudioResponse(dgSession *discordgo.Session, guildID st
 	pcmInt16Output := make([]int16, len(pcmFloat64AtTargetRate))
 	for i, s := range pcmFloat64AtTargetRate {
 		val := s * 32767.0
-		if val > 32767.0 { val = 32767.0 }
-		if val < -32768.0 { val = -32768.0 }
+		if val > 32767.0 {
+			val = 32767.0
+		}
+		if val < -32768.0 {
+			val = -32768.0
+		}
 		pcmInt16Output[i] = int16(val)
 	}
 
-	encoder, err := opus.NewEncoder(discordTargetSampleRate, 1, opus.AppVoIP)
+	encoder, err := opus.NewEncoder(discordTargetSampleRate, 1, opus.ApplicationVoIP)
 	if err != nil {
 		log.Errorf("Failed to create Opus encoder for TTS response (user %s, guild %s): %v", userID, guildID, err)
 		return
