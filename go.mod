@@ -7,7 +7,6 @@ toolchain go1.24.4
 require (
 	github.com/bwmarrin/discordgo v0.28.1
 	github.com/charmbracelet/log v0.4.0
-	github.com/google/generative-ai-go v0.20.1
 	github.com/joho/godotenv v1.5.1
 	github.com/pocketbase/dbx v1.11.0 // Target version (compatible)
 	github.com/pocketbase/pocketbase v0.28.3 // Target version
@@ -16,8 +15,10 @@ require (
 )
 
 require (
+	github.com/google/generative-ai-go v0.20.1
 	github.com/pion/opus v0.0.0-20250423145807-4aaa26789cff
 	github.com/zaf/resample v1.5.0
+	google.golang.org/genai v1.10.0
 )
 
 require (
@@ -42,11 +43,12 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-ozzo/ozzo-validation/v4 v4.3.0 // indirect
 	github.com/golang-jwt/jwt/v5 v5.2.2 // indirect
+	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.6 // indirect
 	github.com/googleapis/gax-go/v2 v2.14.1 // indirect
-	github.com/gorilla/websocket v1.4.2 // indirect
+	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.2.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
