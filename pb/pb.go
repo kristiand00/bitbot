@@ -36,16 +36,16 @@ func Init() {
 
 // GetApp is a helper to ensure pbApp is initialized.
 func GetApp() *pocketbase.PocketBase {
-    if pbApp == nil {
-        // This case should ideally not be hit if Init() is called at application startup.
-        log.Warn("PocketBase app (pbApp) requested before Init() was called. Calling Init() now.")
-        Init() // Ensures initialization
-        if pbApp == nil { // If Init failed fatally (though it logs Fatalf)
-             log.Fatal("pbApp is nil even after Init(). This indicates a critical error during bootstrap.")
-             return nil // Should be unreachable
-        }
-    }
-    return pbApp
+	if pbApp == nil {
+		// This case should ideally not be hit if Init() is called at application startup.
+		log.Warn("PocketBase app (pbApp) requested before Init() was called. Calling Init() now.")
+		Init()            // Ensures initialization
+		if pbApp == nil { // If Init failed fatally (though it logs Fatalf)
+			log.Fatal("pbApp is nil even after Init(). This indicates a critical error during bootstrap.")
+			return nil // Should be unreachable
+		}
+	}
+	return pbApp
 }
 
 func GetRecordById(collectionNameOrId string, recordID string) (*core.Record, error) {
