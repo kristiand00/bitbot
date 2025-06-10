@@ -7,8 +7,8 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/charmbracelet/log"
-	"google.golang.org/genai" // Changed to new SDK
-	"google.golang.org/api/option" // Keep for now, but NewClient might not use it directly
+	"google.golang.org/genai"
+	"google.golang.org/api/option" // Re-add for option.WithAPIKey
 )
 
 // Model name constants
@@ -21,8 +21,8 @@ const (
 var (
 	lastChannelID         string
 	geminiClient          *genai.Client
-	geminiChatModel       *genai.GenerativeModel
-	currentChatSession    *genai.ChatSession
+	genaiModel            *genai.GenerativeModel // Re-added and correctly typed
+	currentChatSession    *genai.Chat
 	// userVoiceChatSessions map[string]*genai.ChatSession // REMOVED
 )
 
@@ -31,25 +31,18 @@ func InitGeminiClient(apiKey string) error {
 		return fmt.Errorf("Gemini API key is not provided")
 	}
 	ctx := context.Background()
-	// Updated client initialization
-	// Assuming genai.BackendGeminiAPI is a valid constant or using a placeholder.
-	// If BackendGeminiAPI is not defined, this will need adjustment.
-	// For now, let's assume it exists or a similar mechanism is in place.
-	// If not, the fallback to option.WithAPIKey might be needed, or further SDK exploration.
-	client, err := genai.NewClient(ctx, genai.WithAPIKey(apiKey)) // Using WithAPIKey for safer direct usage
-	// client, err := genai.NewClient(ctx, &genai.ClientConfig{ APIKey: apiKey, Backend: genai.BackendGeminiAPI })
+	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey)) // Corrected client initialization
 	if err != nil {
 		log.Errorf("Failed to create Generative Client: %v", err)
 		return fmt.Errorf("failed to create Generative Client: %w", err)
 	}
 	geminiClient = client
-	geminiChatModel = geminiClient.GenerativeModel(TextModelName)
-	geminiChatModel.SystemInstruction = &genai.Content{
+	genaiModel = client.GenerativeModel(TextModelName) // Initialize genaiModel
+	genaiModel.SystemInstruction = &genai.Content{ // Set SystemInstruction on the model
 		Parts: []genai.Part{genai.Text(systemMessageText)},
+		Role:  genai.RoleModel,
 	}
-	log.Infof("Generative Client initialized successfully with text model: %s", TextModelName)
-	// userVoiceChatSessions = make(map[string]*genai.ChatSession) // REMOVED
-	// log.Info("User voice chat sessions map initialized.") // REMOVED
+	log.Infof("GenAI Client and Model initialized successfully with text model: %s", TextModelName)
 	return nil
 }
 
@@ -63,7 +56,7 @@ func prepareMessageForHistory(messageContent string, messageRole string, existin
 		return existingHistory
 	}
 	newMessage := &genai.Content{
-		Parts: []genai.Part{genai.Text(messageContent)},
+		Parts: []genai.Part{genai.Text(messageContent)}, // Corrected Part creation
 		Role:  messageRole,
 	}
 	updatedHistory := append(existingHistory, newMessage)
@@ -71,7 +64,7 @@ func prepareMessageForHistory(messageContent string, messageRole string, existin
 }
 
 func chatGPT(session *discordgo.Session, channelID string, userMessageContent string) {
-	if geminiClient == nil || geminiChatModel == nil {
+	if geminiClient == nil || genaiModel == nil { // Corrected check
 		log.Error("Gemini client or model is not initialized.")
 		_, _ = session.ChannelMessageSend(channelID, "Sorry, the chat service is not properly configured.")
 		return
@@ -79,8 +72,8 @@ func chatGPT(session *discordgo.Session, channelID string, userMessageContent st
 
 	ctx := context.Background()
 
-	if geminiChatModel == nil {
-		log.Error("Gemini model is not initialized. Cannot proceed.")
+	if genaiModel == nil { // Ensure genaiModel is not nil
+		log.Error("Gemini model (genaiModel) is not initialized. Cannot proceed.")
 		_, _ = session.ChannelMessageSend(channelID, "Sorry, the chat model is not available.")
 		return
 	}
@@ -91,8 +84,11 @@ func chatGPT(session *discordgo.Session, channelID string, userMessageContent st
 		} else {
 			log.Infof("Channel ID changed from %s to %s. Initializing new chat session.", lastChannelID, channelID)
 		}
-		currentChatSession = geminiChatModel.StartChat()
-		currentChatSession.History = []*genai.Content{}
+		// Use genaiModel.StartChat() which uses SystemInstruction from the model
+		currentChatSession = genaiModel.StartChat()
+		if currentChatSession.History == nil {
+			currentChatSession.History = []*genai.Content{}
+		}
 		lastChannelID = channelID
 		log.Info("Fetching last 20 messages to populate history...")
 		discordMessages, err := session.ChannelMessages(channelID, 20, "", "", "")
@@ -122,7 +118,7 @@ func chatGPT(session *discordgo.Session, channelID string, userMessageContent st
 		log.Info("User message content is empty. Nothing to send to AI.")
 		return
 	}
-	currentUserParts := []genai.Part{genai.Text(userMessageContent)}
+	currentUserParts := []genai.Part{genai.Text(userMessageContent)} // Corrected Part creation
 
 	_ = session.ChannelTyping(channelID)
 
