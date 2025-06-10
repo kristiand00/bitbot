@@ -7,8 +7,8 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/charmbracelet/log"
-	"google.golang.org/genai"
 	"google.golang.org/api/option" // Re-add for option.WithAPIKey
+	"google.golang.org/genai"
 )
 
 // Model name constants
@@ -19,10 +19,10 @@ const (
 )
 
 var (
-	lastChannelID         string
-	geminiClient          *genai.Client
-	genaiModel            *genai.GenerativeModel // Re-added and correctly typed
-	currentChatSession    *genai.Chat
+	lastChannelID      string
+	geminiClient       *genai.Client
+	genaiModel         *genai.GenerativeModel // Re-added and correctly typed
+	currentChatSession *genai.Chat
 	// userVoiceChatSessions map[string]*genai.ChatSession // REMOVED
 )
 
@@ -38,7 +38,7 @@ func InitGeminiClient(apiKey string) error {
 	}
 	geminiClient = client
 	genaiModel = client.GenerativeModel(TextModelName) // Initialize genaiModel
-	genaiModel.SystemInstruction = &genai.Content{ // Set SystemInstruction on the model
+	genaiModel.SystemInstruction = &genai.Content{     // Set SystemInstruction on the model
 		Parts: []genai.Part{genai.Text(systemMessageText)},
 		Role:  genai.RoleModel,
 	}
