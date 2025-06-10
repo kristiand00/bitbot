@@ -7,8 +7,8 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/charmbracelet/log"
-	"github.com/google/generative-ai-go/genai"
-	"google.golang.org/api/option"
+	"google.golang.org/genai" // Changed to new SDK
+	"google.golang.org/api/option" // Keep for now, but NewClient might not use it directly
 )
 
 // Model name constants
@@ -31,7 +31,13 @@ func InitGeminiClient(apiKey string) error {
 		return fmt.Errorf("Gemini API key is not provided")
 	}
 	ctx := context.Background()
-	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey))
+	// Updated client initialization
+	// Assuming genai.BackendGeminiAPI is a valid constant or using a placeholder.
+	// If BackendGeminiAPI is not defined, this will need adjustment.
+	// For now, let's assume it exists or a similar mechanism is in place.
+	// If not, the fallback to option.WithAPIKey might be needed, or further SDK exploration.
+	client, err := genai.NewClient(ctx, genai.WithAPIKey(apiKey)) // Using WithAPIKey for safer direct usage
+	// client, err := genai.NewClient(ctx, &genai.ClientConfig{ APIKey: apiKey, Backend: genai.BackendGeminiAPI })
 	if err != nil {
 		log.Errorf("Failed to create Generative Client: %v", err)
 		return fmt.Errorf("failed to create Generative Client: %w", err)

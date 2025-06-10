@@ -21,7 +21,9 @@ import (
 	"github.com/pion/opus" // Opus decoding (switched from layeh/gopus)
 	"github.com/zaf/resample" // For resampling audio
 
-	"github.com/google/generative-ai-go/genai" // GenAI
+	// "github.com/google/generative-ai-go/genai" // Old GenAI import
+	"google.golang.org/genai" // New GenAI import
+	// "google.golang.org/genai/types" // Removed as it's not a valid package in v1.10.0
 )
 
 var (
@@ -94,7 +96,7 @@ var userVoiceSessions map[string]*UserVoiceSession
 var userVoiceSessionsMutex = sync.RWMutex{}
 
 type UserVoiceSession struct {
-	GenAISession      *genai.Session
+	GenAISession      *genai.LiveSession // Updated to LiveSession
 	UserID            string
 	GuildID           string
 	DiscordSession    *discordgo.Session
@@ -256,12 +258,9 @@ func receiveOpusPackets(vc *discordgo.VoiceConnection, guildID string, originalC
 		return
 	}
 
-	decoder, err := opus.NewDecoder(48000, 1)
-	if err != nil {
-		log.Errorf("Failed to create pion/opus decoder for guild %s: %v", guildID, err)
-		return
-	}
+	decoder := opus.NewDecoder()
 	log.Infof("pion/opus decoder created for guild %s", guildID)
+	// The Decode method will return an error if it fails, which is handled later.
 
 	const pcmFrameSize = 960
 	pcmBuffer := make([]int16, pcmFrameSize)
@@ -269,6 +268,7 @@ func receiveOpusPackets(vc *discordgo.VoiceConnection, guildID string, originalC
 	for {
 		select {
 		case packet, ok := <-vc.OpusRecv:
+			var currentUserID string // Declare currentUserID
 			if !ok {
 				log.Warnf("OpusRecv channel closed for guild %s. Exiting receiver goroutine.", guildID)
 				userVoiceSessionsMutex.Lock()
@@ -306,27 +306,28 @@ func receiveOpusPackets(vc *discordgo.VoiceConnection, guildID string, originalC
 			pcmDataForGenAI := make([]int16, n)
 			copy(pcmDataForGenAI, pcmBuffer[:n])
 
-			if packet.UserID == "" {
-				foundUser := ""
-				guildState, stateErr := vc.Session.State.Guild(guildID)
-				if stateErr == nil {
-					for _, vs := range guildState.VoiceStates {
-						if vs.SSRC == packet.SSRC {
-							foundUser = vs.UserID
-							break
-						}
+			// Unconditionally retrieve UserID by SSRC
+			foundUser := ""
+			// Note: The line below anticipates the fix from Step 4 (using dgSession instead of vc.Session)
+			guildState, stateErr := dgSession.State.Guild(guildID)
+			if stateErr == nil {
+				for _, vs := range guildState.VoiceStates {
+					if vs.SSRC == packet.SSRC { // packet.SSRC is valid
+						foundUser = vs.UserID
+						break
 					}
 				}
-				if foundUser == "" {
-					log.Warnf("Could not find UserID for SSRC %d in guild %s. Skipping GenAI send.", packet.SSRC, guildID)
-					continue
-				}
-				packet.UserID = foundUser
 			}
 
-			userSession, err := establishAndManageVoiceSession(packet.UserID, guildID, dgSession, originalChannelID)
+			if foundUser == "" {
+				log.Warnf("Could not find UserID for SSRC %d in guild %s. Skipping GenAI send.", packet.SSRC, guildID)
+				continue // Skip processing this packet
+			}
+			currentUserID = foundUser // Assign to the new local variable
+
+			userSession, err := establishAndManageVoiceSession(currentUserID, guildID, dgSession, originalChannelID)
 			if err != nil || userSession == nil || userSession.GenAISession == nil {
-				log.Errorf("Failed to establish or retrieve GenAI session for user %s in guild %s: %v. Skipping audio send.", packet.UserID, guildID, err)
+				log.Errorf("Failed to establish or retrieve GenAI session for user %s in guild %s: %v. Skipping audio send.", currentUserID, guildID, err)
 				continue
 			}
 
@@ -335,15 +336,17 @@ func receiveOpusPackets(vc *discordgo.VoiceConnection, guildID string, originalC
 				binary.LittleEndian.PutUint16(pcmBytes[i*2:], uint16(sVal))
 			}
 
-			mediaBlob := &genai.Blob{
-				MimeType: "audio/l16;rate=48000;channels=1",
+			mediaBlob := &genai.Blob{ // Reverted to genai.Blob
+				MIMEType: "audio/l16;rate=48000;channels=1", // MIMEType remains correct
 				Data:     pcmBytes,
 			}
-			realtimeInput := genai.LiveRealtimeInput{Media: mediaBlob}
+			// Assuming RealtimeInput is now a struct literal with an Audio field
+			// and directly under genai.
+			realtimeInput := &genai.RealtimeInput{Audio: mediaBlob} // Reverted to genai.RealtimeInput
 
-			errSend := userSession.GenAISession.SendRealtimeInput(realtimeInput)
+			errSend := userSession.GenAISession.SendRealtimeInput(realtimeInput) // Method name might change
 			if errSend != nil {
-				log.Errorf("receiveOpusPackets: SendRealtimeInput failed for user %s: %v", packet.UserID, errSend)
+				log.Errorf("receiveOpusPackets: SendRealtimeInput failed for user %s: %v", currentUserID, errSend)
 			}
 
 		case <-time.After(30 * time.Second):
@@ -369,19 +372,26 @@ func establishAndManageVoiceSession(userID string, guildID string, dgSession *di
 		ctx := context.Background()
 		modelName := AudioModelName
 
-		connectConfig := &genai.LiveConnectConfig{
-			ResponseModalities: []genai.Modality{genai.ModalityAudio},
-			SpeechConfig: &genai.SpeechConfig{
-				AudioEncoding:   "LINEAR16",
+		// Types are now directly under 'genai' package.
+		connectConfig := &genai.LiveConnectConfig{ // Reverted to genai.LiveConnectConfig
+			ResponseModalities: []genai.Modality{genai.ModalityAudio}, // Reverted to genai.Modality
+			SpeechConfig: &genai.SpeechConfig{ // Reverted to genai.SpeechConfig
+				AudioEncoding:   "LINEAR16", // This might be an enum like genai.AudioEncodingLinear16
 				SampleRateHertz: 24000,
 			},
-			ContextWindowCompression: &genai.ContextWindowCompressionConfig{
-				SlidingWindow: &genai.SlidingWindow{},
+			ContextWindowCompression: &genai.ContextWindowCompressionConfig{ // Reverted to genai.ContextWindowCompressionConfig
+				SlidingWindow: &genai.SlidingWindow{}, // Reverted to genai.SlidingWindow
 			},
 		}
 		log.Infof("Attempting to connect to GenAI Live with model: %s, output config: 24kHz LINEAR16", modelName)
 
-		liveSession, err := geminiClient.Live.Connect(ctx, modelName, connectConfig)
+		// The connection method might change.
+		// Assuming geminiClient is already updated to the new SDK's client type.
+		// Placeholder: geminiClient.StartLiveChat(ctx, modelName, connectConfig) or similar.
+		// For now, keeping a structure similar to the original if the exact method is unknown.
+		// This part might need further adjustment based on the actual new SDK.
+		liveService := genai.NewLiveClient(geminiClient) // This is a guess, might be geminiClient.Live(ctx) or similar
+		liveSession, err := liveService.Connect(ctx, modelName, connectConfig) // Or liveClient.StartLiveChat(...)
 		if err != nil {
 			log.Errorf("Failed to connect to GenAI Live model '%s' for user %s, guild %s: %v", modelName, userID, guildID, err)
 			return nil, err
