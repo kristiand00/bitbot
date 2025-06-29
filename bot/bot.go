@@ -2,30 +2,29 @@ package bot
 
 import (
 	"bitbot/pb"       // PocketBase interaction
-	"context"         // For GenAI client
+	"bytes"
+	"context"
+	"encoding/base64"
 	"encoding/binary" // For PCM to byte conversion
-	"errors"          // For error handling
+	"encoding/json"
 	"fmt"
+	"io"
 	"math/rand"
+	"net/http"
 	"os" // Restoring os import
 	"os/signal"
+	"regexp"
+	"strconv"
 	"strings"
+	"sync" // For RWMutex
 	"time" // Added for timeout in receiveOpusPackets
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/charmbracelet/log"
+	"github.com/zaf/resample"
 	"google.golang.org/api/option" // For GenAI client
-	"io"                           // For io.EOF in GenAI receive
-	"regexp"                       // For parsing time strings
-	"strconv"                      // For parsing time strings
-	"sync"                         // For RWMutex
-
-	"github.com/pion/opus"    // Opus decoding (switched from layeh/gopus)
-	"github.com/zaf/resample" // For resampling audio
-
-	// "github.com/google/generative-ai-go/genai" // Old GenAI import
-	"google.golang.org/genai" // New GenAI import
-	// "google.golang.org/genai/types" // Removed as it's not a valid package in v1.10.0
+	"google.golang.org/genai"      // New GenAI import
+	"layeh.com/gopus"              // Using layeh.com/gopus for Discord voice
 )
 
 var (
@@ -36,7 +35,9 @@ var (
 	AllowedUserID string
 	AppId         string
 
-	// ttsClient *texttospeech.Client // REMOVED
+	// Voice activity tracking
+	activeSpeakers      = make(map[string]bool)
+	activeSpeakersMutex sync.RWMutex
 )
 
 // Command definitions
@@ -162,6 +163,7 @@ func Run() {
 	discord.AddHandler(commandHandler)
 	discord.AddHandler(newMessage)
 	discord.AddHandler(modalHandler)
+	discord.AddHandler(voiceStateUpdate) // Add voice state update handler
 
 	log.Info("Opening Discord connection...")
 	err = discord.Open()
@@ -216,11 +218,11 @@ var userVoiceSessions map[string]*UserVoiceSession
 var userVoiceSessionsMutex = sync.RWMutex{}
 
 type UserVoiceSession struct {
-	GenAISession      *genai.LiveSession // Changed from LiveSession to Session
 	UserID            string
 	GuildID           string
 	DiscordSession    *discordgo.Session
 	OriginalChannelID string
+	GenAISession      *genai.Chat
 }
 
 func hasAdminRole(roles []string) bool {
@@ -260,10 +262,6 @@ func registerCommands(discord *discordgo.Session, appID string) {
 	}
 }
 
-func joinVoiceChannel(s *discordgo.Session, m *discordgo.MessageCreate) {
-		}
-	}
-}
 
 func joinVoiceChannel(s *discordgo.Session, m *discordgo.MessageCreate) {
 	perms, err := s.UserChannelPermissions(s.State.User.ID, m.ChannelID)
@@ -320,6 +318,17 @@ func joinVoiceChannel(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 }
 
+func voiceStateUpdate(s *discordgo.Session, vs *discordgo.VoiceStateUpdate) {
+	activeSpeakersMutex.Lock()
+	defer activeSpeakersMutex.Unlock()
+
+	if vs.SelfMute || vs.SelfDeaf {
+		activeSpeakers[vs.UserID] = false
+	} else {
+		activeSpeakers[vs.UserID] = true
+	}
+}
+
 func receiveOpusPackets(vc *discordgo.VoiceConnection, guildID string, originalChannelID string, dgSession *discordgo.Session) {
 	log.Infof("Starting Opus packet receiver for guild %s (original channel %s)", guildID, originalChannelID)
 	defer log.Infof("Stopping Opus packet receiver for guild %s (original channel %s)", guildID, originalChannelID)
@@ -329,121 +338,114 @@ func receiveOpusPackets(vc *discordgo.VoiceConnection, guildID string, originalC
 		return
 	}
 
-	decoder := opus.NewDecoder()
-	log.Infof("pion/opus decoder created for guild %s", guildID)
-	// The Decode method will return an error if it fails, which is handled later.
+	// Get the user ID from the voice connection
+	userID := ""
+	guild, err := dgSession.State.Guild(guildID)
+	if err != nil {
+		log.Errorf("Failed to get guild information: %v", err)
+		return
+	}
 
+	for _, vs := range guild.VoiceStates {
+		if vs.ChannelID == vc.ChannelID && vs.UserID != dgSession.State.User.ID {
+			userID = vs.UserID
+			break
+		}
+	}
+
+	if userID == "" {
+		log.Errorf("Could not find user ID for voice channel in guild %s", guildID)
+		return
+	}
+
+	decoder, err := gopus.NewDecoder(48000, 1)
+	if err != nil {
+		log.Errorf("Failed to create Opus decoder: %v", err)
+		return
+	}
+	log.Infof("opus decoder created for guild %s", guildID)
 	const pcmFrameSize = 960
-	pcmBuffer := make([]int16, pcmFrameSize)
+
+	// Buffer for accumulating audio data
+	var audioBuffer []int16
+	const bufferDuration = 3 * time.Second // Process every 3 seconds of audio
+	const samplesPerSecond = 48000
+	const bufferSize = 144000 // 3 seconds * 48000 samples per second
+	lastProcessTime := time.Now()
+
+	// Voice activity detection
+	var silenceStart time.Time
+	const silenceThreshold = 500 * time.Millisecond // Consider it silence after 500ms of no speech
+	const minSpeechDuration = 1 * time.Second       // Ignore audio bursts shorter than 1 second
+	var speechStart time.Time
+	var isProcessingSpeech bool
 
 	for {
 		select {
 		case packet, ok := <-vc.OpusRecv:
-			var currentUserID string // Declare currentUserID
-			// bytePcmBuffer for pion/opus Decode method which expects []byte
-			bytePcmBuffer := make([]byte, pcmFrameSize*2) // *2 because pcmFrameSize is in int16 samples
-
 			if !ok {
 				log.Warnf("OpusRecv channel closed for guild %s. Exiting receiver goroutine.", guildID)
-				userVoiceSessionsMutex.Lock()
-				log.Warnf("OpusRecv channel closed for guild %s. Cleaning up associated UserVoiceSessions.", guildID)
-				keysToDelete := []string{}
-				for key, uvs := range userVoiceSessions {
-					if uvs.GuildID == guildID {
-						keysToDelete = append(keysToDelete, key)
-					}
-				}
-				for _, key := range keysToDelete {
-					uvs := userVoiceSessions[key]
-					if uvs.GenAISession != nil {
-						log.Infof("Closing GenAI session for user %s in guild %s due to OpusRecv channel closure.", uvs.UserID, guildID)
-						uvs.GenAISession.Close()
-					}
-					delete(userVoiceSessions, key)
-					log.Infof("Deleted UserVoiceSession for user %s in guild %s due to OpusRecv channel closure.", uvs.UserID, guildID)
-				}
-				userVoiceSessionsMutex.Unlock()
 				return
 			}
 
 			if packet == nil || packet.Opus == nil {
-				log.Debugf("Received nil packet or nil Opus data for guild %s, SSRC %d. Skipping.", guildID, packet.SSRC)
+				log.Debugf("Received nil packet or nil Opus data for guild %s. Skipping.", guildID)
 				continue
 			}
 
-			// Use bytePcmBuffer for decoding. Decode returns bandwidth, stereo status, and error.
-			_, _, err := decoder.Decode(packet.Opus, bytePcmBuffer)
-			if err != nil {
-				log.Errorf("pion/opus failed to decode Opus packet for SSRC %d, guild %s: %v", packet.SSRC, guildID, err)
-				continue
-			}
-
-			// Convert bytePcmBuffer back to pcmBuffer (int16)
-			// n will be the number of int16 samples successfully read.
-			var n int
-			for i := 0; i < pcmFrameSize; i++ {
-				if (i*2 + 1) < len(bytePcmBuffer) {
-					pcmBuffer[i] = int16(binary.LittleEndian.Uint16(bytePcmBuffer[i*2 : i*2+2]))
-					n = i + 1 // Count successfully converted samples
-				} else {
-					log.Warnf("Decoded byte buffer smaller than expected for pcmFrameSize. SSRC %d, guild %s. Read %d samples.", packet.SSRC, guildID, n)
+			// Check if anyone is speaking in the channel
+			activeSpeakersMutex.RLock()
+			isSpeaking := false
+			for _, speaking := range activeSpeakers {
+				if speaking {
+					isSpeaking = true
 					break
 				}
 			}
-			if n == 0 && pcmFrameSize > 0 { // If nothing was decoded and we expected samples
-				log.Warnf("No PCM samples decoded from Opus packet. SSRC %d, guild %s", packet.SSRC, guildID)
-				continue
-			}
+			activeSpeakersMutex.RUnlock()
 
-			pcmDataForGenAI := make([]int16, n) // Use the actual number of decoded samples
-			copy(pcmDataForGenAI, pcmBuffer[:n])
+			if isSpeaking {
+				if !isProcessingSpeech {
+					speechStart = time.Now()
+					isProcessingSpeech = true
+				}
+				silenceStart = time.Time{} // Reset silence timer
+				pcm, err := decoder.Decode(packet.Opus, pcmFrameSize, false)
+				if err != nil {
+					log.Errorf("Failed to decode Opus packet: %v", err)
+					continue
+				}
 
-			// Unconditionally retrieve UserID by SSRC
-			foundUser := ""
-			// Note: The line below anticipates the fix from Step 4 (using dgSession instead of vc.Session)
-			guildState, stateErr := dgSession.State.Guild(guildID)
-			if stateErr == nil {
-				for _, vs := range guildState.VoiceStates {
-					if vs.SSRC == packet.SSRC { // packet.SSRC is valid
-						foundUser = vs.UserID
-						break
+				// Add decoded PCM data to buffer
+				audioBuffer = append(audioBuffer, pcm...)
+
+				// Process buffer if it's full or enough time has passed
+				if len(audioBuffer) >= bufferSize || time.Since(lastProcessTime) >= bufferDuration {
+					if len(audioBuffer) > 0 {
+						processAudioBuffer(audioBuffer, guildID, userID, dgSession)
+						audioBuffer = nil
+						lastProcessTime = time.Now()
 					}
 				}
-			}
-
-			if foundUser == "" {
-				log.Warnf("Could not find UserID for SSRC %d in guild %s. Skipping GenAI send.", packet.SSRC, guildID)
-				continue // Skip processing this packet
-			}
-			currentUserID = foundUser // Assign to the new local variable
-
-			userSession, err := establishAndManageVoiceSession(currentUserID, guildID, dgSession, originalChannelID)
-			if err != nil || userSession == nil || userSession.GenAISession == nil {
-				log.Errorf("Failed to establish or retrieve GenAI session for user %s in guild %s: %v. Skipping audio send.", currentUserID, guildID, err)
-				continue
-			}
-
-			pcmBytes := make([]byte, len(pcmDataForGenAI)*2)
-			for i, sVal := range pcmDataForGenAI {
-				binary.LittleEndian.PutUint16(pcmBytes[i*2:], uint16(sVal))
-			}
-
-			mediaBlob := &genai.Blob{ // Reverted to genai.Blob
-				MIMEType: "audio/l16;rate=48000;channels=1", // MIMEType remains correct
-				Data:     pcmBytes,
-			}
-			// Assuming RealtimeInput is now a struct literal with an Audio field
-			// and directly under genai.
-			// realtimeInput := genai.LiveRealtimeInput{Audio: mediaBlob} // Changed to LiveRealtimeInput
-			// errSend := userSession.GenAISession.SendRealtimeInput(realtimeInput) // Method name might change
-			req := &genai.LiveRequest{
-				Content: &genai.Content{
-					Parts: []genai.Part{mediaBlob},
-				},
-			}
-			errSend := userSession.GenAISession.Send(context.Background(), req)
-			if errSend != nil {
-				log.Errorf("receiveOpusPackets: SendRealtimeInput failed for user %s: %v", currentUserID, errSend)
+			} else {
+				if isProcessingSpeech {
+					if silenceStart.IsZero() {
+						silenceStart = time.Now()
+					} else if time.Since(silenceStart) > silenceThreshold {
+						// Only process if the speech duration was long enough
+						if time.Since(speechStart) >= minSpeechDuration {
+							// Process any remaining audio in the buffer
+							if len(audioBuffer) > 0 {
+								processAudioBuffer(audioBuffer, guildID, userID, dgSession)
+							}
+						} else {
+							log.Debugf("Ignoring short audio burst of %v", time.Since(speechStart))
+						}
+						audioBuffer = nil
+						lastProcessTime = time.Now()
+						isProcessingSpeech = false
+					}
+				}
 			}
 
 		case <-time.After(30 * time.Second):
@@ -452,71 +454,137 @@ func receiveOpusPackets(vc *discordgo.VoiceConnection, guildID string, originalC
 	}
 }
 
-func establishAndManageVoiceSession(userID string, guildID string, dgSession *discordgo.Session, originalChannelID string) (*UserVoiceSession, error) {
-	userSessionKey := guildID + ":" + userID
-	userVoiceSessionsMutex.RLock()
-	userSession, exists := userVoiceSessions[userSessionKey]
-	userVoiceSessionsMutex.RUnlock()
+// Helper function to process audio buffer
+func processAudioBuffer(audioBuffer []int16, guildID string, userID string, dgSession *discordgo.Session) {
+	// Convert PCM to WAV format
+	wavBuffer := new(bytes.Buffer)
 
-	if !exists || userSession == nil || userSession.GenAISession == nil {
-		log.Infof("No active GenAI Live session for user %s in guild %s. Establishing new session with AudioModelName.", userID, guildID)
+	// Write WAV header
+	// RIFF header
+	wavBuffer.WriteString("RIFF")
+	binary.Write(wavBuffer, binary.LittleEndian, uint32(36+len(audioBuffer)*2)) // File size - 8
+	wavBuffer.WriteString("WAVE")
 
-		if geminiClient == nil {
-			log.Error("GenAI client (geminiClient) is not initialized. Cannot establish voice session.")
-			return nil, fmt.Errorf("geminiClient not initialized")
-		}
+	// Format chunk
+	wavBuffer.WriteString("fmt ")
+	binary.Write(wavBuffer, binary.LittleEndian, uint32(16))      // Chunk size
+	binary.Write(wavBuffer, binary.LittleEndian, uint16(1))       // Audio format (1 for PCM)
+	binary.Write(wavBuffer, binary.LittleEndian, uint16(1))       // Number of channels
+	binary.Write(wavBuffer, binary.LittleEndian, uint32(48000))   // Sample rate
+	binary.Write(wavBuffer, binary.LittleEndian, uint32(48000*2)) // Byte rate
+	binary.Write(wavBuffer, binary.LittleEndian, uint16(2))       // Block align
+	binary.Write(wavBuffer, binary.LittleEndian, uint16(16))      // Bits per sample
 
-		ctx := context.Background()
-		modelName := AudioModelName
+	// Data chunk
+	wavBuffer.WriteString("data")
+	binary.Write(wavBuffer, binary.LittleEndian, uint32(len(audioBuffer)*2)) // Data size
 
-		// Types are now directly under 'genai' package.
-		connectConfig := &genai.LiveConnectConfig{
-			ResponseModalities: []genai.Modality{genai.ModalityAudio},
-			SpeechConfig:       &genai.SpeechConfig{}, // Removed AudioEncoding and SampleRateHertz
-			ContextWindowCompression: &genai.ContextWindowCompressionConfig{
-				SlidingWindow: &genai.SlidingWindow{},
-			},
-		}
-		log.Infof("Attempting to connect to GenAI Live with model: %s, output config: (using SDK defaults for speech)", modelName)
-
-		// Use geminiClient.Live.Connect directly
-		liveSession, err := geminiClient.Live.Connect(ctx, modelName, connectConfig)
-		if err != nil {
-			log.Errorf("Failed to connect to GenAI Live model '%s' for user %s, guild %s: %v", modelName, userID, guildID, err)
-			return nil, err
-		}
-		log.Infof("GenAI Live session connected with model '%s' for user %s, guild %s.", modelName, userID, guildID)
-
-		userVoiceSessionsMutex.Lock()
-		userSession, exists = userVoiceSessions[userSessionKey]
-		if !exists || userSession == nil {
-			userSession = &UserVoiceSession{
-				UserID:            userID,
-				GuildID:           guildID,
-				GenAISession:      liveSession,
-				DiscordSession:    dgSession,
-				OriginalChannelID: originalChannelID,
-			}
-			userVoiceSessions[userSessionKey] = userSession
-			log.Infof("UserVoiceSession stored for user %s, guild %s.", userID, guildID)
-		} else if userSession.GenAISession == nil {
-			userSession.GenAISession = liveSession
-			userSession.DiscordSession = dgSession
-			userSession.OriginalChannelID = originalChannelID
-			log.Infof("Updated existing UserVoiceSession with new GenAISession for user %s, guild %s.", userID, guildID)
-		} else {
-			log.Warnf("GenAI Live session for user %s guild %s already created by another goroutine. Closing redundant session.", userID, guildID)
-			liveSession.Close()
-		}
-		userVoiceSessionsMutex.Unlock()
-
-		if userSession.GenAISession == liveSession {
-			go receiveAudioFromGenAI(userSession)
-		}
-	} else {
-		log.Debugf("Reusing existing GenAI Live session for user %s in guild %s.", userID, guildID)
+	// Write PCM data
+	for _, sample := range audioBuffer {
+		binary.Write(wavBuffer, binary.LittleEndian, int16(sample))
 	}
-	return userSession, nil
+
+	// Create request body for REST API
+	req := AudioRequest{
+		Contents: []struct {
+			Parts []struct {
+				Text       string `json:"text,omitempty"`
+				InlineData *struct {
+					MimeType string `json:"mimeType"`
+					Data     string `json:"data"`
+				} `json:"inlineData,omitempty"`
+			} `json:"parts"`
+		}{
+			{
+				Parts: []struct {
+					Text       string `json:"text,omitempty"`
+					InlineData *struct {
+						MimeType string `json:"mimeType"`
+						Data     string `json:"data"`
+					} `json:"inlineData,omitempty"`
+				}{
+					{
+						InlineData: &struct {
+							MimeType string `json:"mimeType"`
+							Data     string `json:"data"`
+						}{
+							MimeType: "audio/wav",
+							Data:     base64.StdEncoding.EncodeToString(wavBuffer.Bytes()),
+						},
+					},
+				},
+			},
+		},
+	}
+
+	reqBody, err := json.Marshal(req)
+	if err != nil {
+		log.Errorf("Failed to marshal request: %v", err)
+		return
+	}
+
+	apiURL := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", AudioModelName, geminiAPIKey)
+	resp, err := httpClient.Post(apiURL, "application/json", bytes.NewBuffer(reqBody))
+	if err != nil {
+		log.Errorf("Failed to make request: %v", err)
+		return
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		log.Errorf("Audio model request failed with status %d: %s", resp.StatusCode, string(body))
+		return
+	}
+
+	var result struct {
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					Text       string `json:"text,omitempty"`
+					InlineData *struct {
+						MimeType string `json:"mimeType"`
+						Data     string `json:"data"`
+					} `json:"inlineData,omitempty"`
+				} `json:"parts"`
+			} `json:"content"`
+		} `json:"candidates"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		resp.Body.Close()
+		log.Errorf("Failed to decode response: %v", err)
+		return
+	}
+	resp.Body.Close()
+
+	// Create a DM channel with the user
+	channel, err := dgSession.UserChannelCreate(userID)
+	if err != nil {
+		log.Errorf("Failed to create DM channel with user %s: %v", userID, err)
+		return
+	}
+
+	// Process the response
+	for _, candidate := range result.Candidates {
+		for _, part := range candidate.Content.Parts {
+			if part.Text != "" {
+				// Send text response to user's DM
+				_, err := dgSession.ChannelMessageSend(channel.ID, part.Text)
+				if err != nil {
+					log.Errorf("Failed to send text response to user DM: %v", err)
+				}
+			}
+			if part.InlineData != nil && strings.HasPrefix(part.InlineData.MimeType, "audio/") {
+				audioData, err := base64.StdEncoding.DecodeString(part.InlineData.Data)
+				if err != nil {
+					log.Errorf("Failed to decode audio data: %v", err)
+					continue
+				}
+				go processAndSendDiscordAudioResponse(dgSession, guildID, userID, audioData, 24000)
+			}
+		}
+	}
 }
 
 func sendAudioToDiscord(guildID string, userID string, pcmData []byte) {
@@ -536,7 +604,7 @@ func sendAudioToDiscord(guildID string, userID string, pcmData []byte) {
 		return
 	}
 
-	encoder, err := opus.NewEncoder(48000, 1, opus.ApplicationVoIP)
+	encoder, err := gopus.NewEncoder(48000, 1, gopus.Audio)
 	if err != nil {
 		log.Errorf("Failed to create Opus encoder for guild %s: %v", guildID, err)
 		return
@@ -549,7 +617,6 @@ func sendAudioToDiscord(guildID string, userID string, pcmData []byte) {
 
 	const pcmFrameSamples = 960
 	const pcmFrameBytes = pcmFrameSamples * 2
-	opusBuf := make([]byte, 2048)
 	pcmInt16Frame := make([]int16, pcmFrameSamples)
 	totalSentBytes := 0
 
@@ -585,16 +652,15 @@ func sendAudioToDiscord(guildID string, userID string, pcmData []byte) {
 			continue
 		}
 
-		n, err := encoder.Encode(targetPcmSlice, opusBuf)
+		opusData, err := encoder.Encode(targetPcmSlice, pcmFrameSamples, 2048)
 		if err != nil {
-			log.Errorf("Opus encoding failed for guild %s: %v", guildID, err)
+			log.Errorf("Failed to encode PCM: %v", err)
 			return
 		}
-
-		if n > 0 {
+		if len(opusData) > 0 {
 			select {
-			case vc.OpusSend <- opusBuf[:n]:
-				totalSentBytes += n
+			case vc.OpusSend <- opusData:
+				totalSentBytes += len(opusData)
 			case <-time.After(5 * time.Second):
 				log.Errorf("Timeout sending Opus packet to guild %s. Sent %d bytes so far.", guildID, totalSentBytes)
 				return
@@ -643,13 +709,6 @@ func leaveVoiceChannel(s *discordgo.Session, m *discordgo.MessageCreate) {
 
 	for _, key := range keysToDelete {
 		uvs := userVoiceSessions[key]
-		if uvs.GenAISession != nil {
-			log.Infof("Closing GenAI Live session for user %s in guild %s as part of leaving voice.", uvs.UserID, guildID)
-			err := uvs.GenAISession.Close()
-			if err != nil {
-				log.Errorf("Error closing GenAI session for user %s in guild %s: %v", uvs.UserID, uvs.GuildID, err)
-			}
-		}
 		delete(userVoiceSessions, key)
 		log.Infof("Cleaned up UserVoiceSession for user %s in guild %s.", uvs.UserID, guildID)
 	}
@@ -687,7 +746,6 @@ func CleanupAllVoiceSessions() {
 		for _, uvs := range userVoiceSessions {
 			if uvs != nil && uvs.GenAISession != nil {
 				log.Infof("Closing GenAI Live session for user %s in guild %s", uvs.UserID, uvs.GuildID)
-				uvs.GenAISession.Close()
 			}
 		}
 		userVoiceSessions = make(map[string]*UserVoiceSession)
@@ -696,86 +754,6 @@ func CleanupAllVoiceSessions() {
 		log.Info("No active GenAI user voice sessions to cleanup.")
 	}
 	log.Info("All voice sessions cleanup complete.")
-}
-
-func receiveAudioFromGenAI(userSession *UserVoiceSession) {
-	if userSession == nil || userSession.GenAISession == nil {
-		log.Error("Cannot receive audio from GenAI: user session or GenAISession is nil.")
-		return
-	}
-	if userSession.DiscordSession == nil {
-		log.Error("Discord session is nil in UserVoiceSession for user %s, guild %s. Cannot process text.", userSession.UserID, userSession.GuildID)
-		userSession.GenAISession.Close()
-		userVoiceSessionsMutex.Lock()
-		delete(userVoiceSessions, userSession.GuildID+":"+userSession.UserID)
-		userVoiceSessionsMutex.Unlock()
-		return
-	}
-
-	userID := userSession.UserID
-	guildID := userSession.GuildID
-	userSessionKey := guildID + ":" + userID
-	dgSession := userSession.DiscordSession
-	originalChannelID := userSession.OriginalChannelID
-
-	log.Infof("Starting GenAI audio receiver goroutine for user %s in guild %s (original channel %s).", userID, guildID, originalChannelID)
-
-	defer func() {
-		log.Infof("Stopping GenAI audio receiver for user %s in guild %s (original channel %s).", userID, guildID, originalChannelID)
-		userVoiceSessionsMutex.Lock()
-		currentSessionInMap, ok := userVoiceSessions[userSessionKey]
-		if ok && currentSessionInMap == userSession {
-			delete(userVoiceSessions, userSessionKey)
-		}
-		userVoiceSessionsMutex.Unlock()
-		userSession.GenAISession.Close()
-		log.Infof("GenAI session fully closed for user %s, guild %s (audio receiver).", userID, guildID)
-	}()
-
-	for {
-		msg, err := userSession.GenAISession.Receive()
-		if err != nil {
-			if errors.Is(err, io.EOF) || strings.Contains(err.Error(), "stream closed") || strings.Contains(err.Error(), "session closed") {
-				log.Infof("GenAI session stream closed/ended for user %s, guild %s (audio receiver): %v", userID, guildID, err)
-			} else {
-				log.Errorf("Error receiving audio from GenAI for user %s, guild %s: %v", userID, guildID, err)
-			}
-			return // Exit goroutine
-		}
-
-		modelRespondedWithAudio := false
-		if msg != nil {
-			// Access ModelTurn directly and check if ServerContent itself is nil first
-			if msg.ServerContent != nil && msg.ServerContent.ModelTurn != nil {
-				modelTurn := msg.ServerContent.ModelTurn // Changed GetModelTurn() to direct field access
-				for _, part := range modelTurn.Parts {
-					// Check for InlineData for audio, and Text for potential text parts
-					if part.InlineData != nil && strings.HasPrefix(part.InlineData.MIMEType, "audio/") {
-						audioBytes := part.InlineData.Data
-						if len(audioBytes) > 0 {
-							log.Infof("Received audio data blob from GenAI for user %s. MIME: %s, Size: %d bytes.", userID, part.InlineData.MIMEType, len(audioBytes))
-							go processAndSendDiscordAudioResponse(dgSession, guildID, userID, audioBytes, 24000) // Assuming 24000Hz output
-							modelRespondedWithAudio = true
-							break // from inner loop over parts
-						}
-					} else if textVal := part.Text; textVal != "" { // Using direct field access for Text
-						// Handle potential text parts if mixed modality is possible or for debugging
-						log.Debugf("Received text part from GenAI audio stream for user %s: %s", userID, textVal)
-					}
-				}
-				if !modelRespondedWithAudio {
-					log.Warnf("GenAI ModelTurn for user %s (audio expected) had parts, but no audio/media part with InlineData found.", userID)
-				}
-				// Removed the msg.Error block, error is handled from Receive() call directly.
-				// The GenAI library typically surfaces errors through the 'err' return of Receive().
-				// If specific error codes/messages were previously on msg.Error, they might be in err now, or logged by the SDK.
-			} else if msg.ServerContent == nil { // If there's no ServerContent and no error from Receive(), it's unusual.
-				log.Warnf("Received GenAI message for user %s (audio expected) with no ServerContent and no error from Receive(). Msg: %+v", userID, msg)
-			}
-			// If ServerContent is not nil, but ModelTurn is nil, it might be another type of message (e.g. interim results if enabled)
-			// For now, we are only interested in ModelTurn for audio.
-		}
-	}
 }
 
 func processAndSendDiscordAudioResponse(dgSession *discordgo.Session, guildID string, userID string, genaiAudioData []byte, inputSampleRateHz int) {
@@ -816,7 +794,7 @@ func processAndSendDiscordAudioResponse(dgSession *discordgo.Session, guildID st
 
 	if inputSampleRateHz != discordTargetSampleRate {
 		log.Infof("Resampling audio for user %s from %dHz to %dHz.", userID, inputSampleRateHz, discordTargetSampleRate)
-		resampled, err := resample.Resample(inputSampleRateHz, discordTargetSampleRate, 1, pcmFloat64Input)
+		resampled, err := resampleAudio(pcmFloat64Input, inputSampleRateHz, discordTargetSampleRate)
 		if err != nil {
 			log.Errorf("Failed to resample audio for user %s: %v", userID, err)
 			if originalChannelID != "" {
@@ -843,7 +821,7 @@ func processAndSendDiscordAudioResponse(dgSession *discordgo.Session, guildID st
 		pcmInt16Output[i] = int16(val)
 	}
 
-	encoder, err := opus.NewEncoder(discordTargetSampleRate, 1, opus.ApplicationVoIP)
+	encoder, err := createOpusEncoder(discordTargetSampleRate)
 	if err != nil {
 		log.Errorf("Failed to create Opus encoder for TTS response (user %s, guild %s): %v", userID, guildID, err)
 		return
@@ -852,10 +830,8 @@ func processAndSendDiscordAudioResponse(dgSession *discordgo.Session, guildID st
 	if err := vc.Speaking(true); err != nil {
 		log.Errorf("Failed to set speaking true for TTS response (user %s, guild %s): %v", userID, guildID, err)
 	}
-	defer vc.Speaking(false)
 
 	const pcmFrameSamples = 960
-	opusBuf := make([]byte, 2048)
 	totalOpusBytesSent := 0
 
 	for i := 0; i < len(pcmInt16Output); i += pcmFrameSamples {
@@ -868,16 +844,15 @@ func processAndSendDiscordAudioResponse(dgSession *discordgo.Session, guildID st
 			pcmFrameCurrent = pcmInt16Output[i:end]
 		}
 
-		n, err := encoder.Encode(pcmFrameCurrent, opusBuf)
+		opusData, err := encoder.Encode(pcmFrameCurrent, pcmFrameSamples, 2048)
 		if err != nil {
-			log.Errorf("Opus encoding failed for TTS response (user %s, guild %s): %v", userID, guildID, err)
+			log.Errorf("Failed to encode PCM: %v", err)
 			return
 		}
-
-		if n > 0 {
+		if len(opusData) > 0 {
 			select {
-			case vc.OpusSend <- opusBuf[:n]:
-				totalOpusBytesSent += n
+			case vc.OpusSend <- opusData:
+				totalOpusBytesSent += len(opusData)
 			case <-time.After(5 * time.Second):
 				log.Errorf("Timeout sending Opus packet for TTS response (user %s, guild %s). Sent %d bytes.", userID, guildID, totalOpusBytesSent)
 				return
@@ -1600,4 +1575,50 @@ func modalHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			log.Printf("Error responding to modal submission: %v", err)
 		}
 	}
+}
+
+func createOpusEncoder(sampleRate int) (*gopus.Encoder, error) {
+	return gopus.NewEncoder(sampleRate, 1, gopus.Audio)
+}
+
+func resampleAudio(input []float64, fromRate, toRate int) ([]float64, error) {
+	// Convert float64 to int16 PCM
+	pcmData := make([]int16, len(input))
+	for i, v := range input {
+		pcmData[i] = int16(v * 32767.0)
+	}
+
+	// Convert int16 to bytes
+	pcmBytes := make([]byte, len(pcmData)*2)
+	for i, v := range pcmData {
+		binary.LittleEndian.PutUint16(pcmBytes[i*2:], uint16(v))
+	}
+
+	// Create a buffer for the output
+	var outputBuf bytes.Buffer
+
+	// Create a resampler
+	r, err := resample.New(&outputBuf, float64(fromRate), float64(toRate), 1, 2, resample.Quick)
+	if err != nil {
+		return nil, err
+	}
+
+	// Write the input data
+	if _, err := r.Write(pcmBytes); err != nil {
+		return nil, err
+	}
+
+	// Close the resampler
+	if err := r.Close(); err != nil {
+		return nil, err
+	}
+
+	// Convert the output back to float64
+	outputBytes := outputBuf.Bytes()
+	output := make([]float64, len(outputBytes)/2)
+	for i := 0; i < len(outputBytes); i += 2 {
+		output[i/2] = float64(int16(binary.LittleEndian.Uint16(outputBytes[i:]))) / 32767.0
+	}
+
+	return output, nil
 }
