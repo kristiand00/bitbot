@@ -13,17 +13,11 @@ require (
 	golang.org/x/crypto v0.39.0
 )
 
-require (
-	github.com/zaf/resample v1.5.0
-	google.golang.org/api v0.232.0
-	google.golang.org/genai v1.10.0
-	layeh.com/gopus v0.0.0-20210501142526-1ee02d434e32
-)
+require google.golang.org/genai v1.10.0
 
 require (
 	cloud.google.com/go v0.121.2 // indirect
 	cloud.google.com/go/auth v0.16.2 // indirect
-	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
 	cloud.google.com/go/compute/metadata v0.7.0 // indirect
 	github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
