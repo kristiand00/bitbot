@@ -319,8 +319,7 @@ func CreateReminder(data *Reminder) error {
 	record.Set("user_id", data.UserID)
 
 	log.Infof("CreateReminder: target_user_ids = %v", data.TargetUserIDs)
-	b, _ := json.Marshal(data.TargetUserIDs)
-	record.Set("target_user_ids", string(b)) // Explicitly marshal to JSON string
+	record.Set("target_user_ids", data.TargetUserIDs) // Set directly, no marshalling
 
 	record.Set("message", data.Message)
 	record.Set("channel_id", data.ChannelID)
@@ -478,6 +477,10 @@ func recordToReminder(record *core.Record) *Reminder {
 		RecurrenceRule: record.GetString("recurrence_rule"),
 	}
 
+	// Debug log for raw target_user_ids value
+	rawTargetUserIDs := record.Get("target_user_ids")
+	log.Infof("recordToReminder: raw target_user_ids = %#v", rawTargetUserIDs)
+
 	// PocketBase stores JSON array as string internally, Get() returns it as such.
 	// We need to unmarshal it into []string.
 	// However, the `json` field type in PocketBase should automatically handle this
@@ -486,7 +489,6 @@ func recordToReminder(record *core.Record) *Reminder {
 	// For now, assume PocketBase's Go driver handles this for `Get()` on json fields.
 	// Update: Record.Get() on a json field that is an array of strings might return []interface{}.
 	// We need to convert it.
-	rawTargetUserIDs := record.Get("target_user_ids")
 	if targetIDs, ok := rawTargetUserIDs.([]interface{}); ok {
 		r.TargetUserIDs = make([]string, len(targetIDs))
 		for i, v := range targetIDs {
