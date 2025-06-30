@@ -12,6 +12,8 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/pocketbase/dbx"
 
+	"reflect"
+
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core" // Changed from models
 )
@@ -508,7 +510,22 @@ func recordToReminder(record *core.Record) *Reminder {
 			}
 		}
 	default:
-		log.Warn("Unknown type for target_user_ids", "type", fmt.Sprintf("%T", v))
+		// Handle any []byte-like type (e.g., types.JSONRaw) using reflection
+		rv := reflect.ValueOf(v)
+		if rv.Kind() == reflect.Slice && rv.Type().Elem().Kind() == reflect.Uint8 {
+			b := make([]byte, rv.Len())
+			reflect.Copy(reflect.ValueOf(b), rv)
+			if len(b) > 0 {
+				var ids []string
+				if err := json.Unmarshal(b, &ids); err == nil {
+					r.TargetUserIDs = ids
+				} else {
+					log.Warn("Failed to unmarshal target_user_ids []byte (reflect)", "value", string(b), "error", err)
+				}
+			}
+		} else {
+			log.Warn("Unknown type for target_user_ids", "type", fmt.Sprintf("%T", v))
+		}
 	}
 
 	reminderTimeStr := record.GetString("reminder_time")
