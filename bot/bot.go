@@ -710,6 +710,26 @@ func parseWhenSimple(whenStr string) (time.Time, bool, string, error) {
 			return result, true, recurrenceRule, nil
 		}
 	}
+	// Support 'every [weekday] [time]' (e.g., 'every sunday 8pm')
+	weekdayList := []string{"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+		"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+	for _, wd := range weekdayList {
+		if strings.HasPrefix(whenStr, wd+" ") {
+			timePart := strings.TrimPrefix(whenStr, wd+" ")
+			parsedTime, err := parseTimeOfDay(timePart)
+			if err != nil {
+				return time.Time{}, false, "", fmt.Errorf("invalid time format: %v", err)
+			}
+			nextDay, err := parseNextDay(wd)
+			if err != nil {
+				return time.Time{}, false, "", fmt.Errorf("invalid day format: %v", err)
+			}
+			result := time.Date(nextDay.Year(), nextDay.Month(), nextDay.Day(),
+				parsedTime.Hour(), parsedTime.Minute(), 0, 0, now.Location())
+			recurrenceRule = fmt.Sprintf("every %s", wd)
+			return result, true, recurrenceRule, nil
+		}
+	}
 
 	// For now, only "in Xm/h/d" is supported for non-recurring.
 	// And "every Xm/h/d" for recurring.
