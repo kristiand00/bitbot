@@ -23,6 +23,7 @@ var (
 
 type ServerInfo struct {
 	UserID            string
+	GuildID           string
 	ConnectionDetails string
 }
 
@@ -184,6 +185,11 @@ func ensureServersCollection() error {
 	})
 
 	collection.Fields.Add(&core.TextField{
+		Name:     "GuildID", // Added GuildID field
+		Required: true,    // Assuming GuildID is required for server records
+	})
+
+	collection.Fields.Add(&core.TextField{
 		Name:     "ConnectionDetails",
 		Required: true,
 	})
@@ -237,14 +243,14 @@ func CreateRecord(collectionNameOrId string, data *ServerInfo) error {
 	// For dbx.Params, named placeholders like {:name} are common.
 	existingRecord, _ := currentApp.FindFirstRecordByFilter( // Removed .Dao()
 		collectionNameOrId,
-		"UserID = {:userID} && ConnectionDetails = {:connectionDetails}", // Using named placeholders
-		dbx.Params{"userID": data.UserID, "connectionDetails": data.ConnectionDetails},
+		"UserID = {:userID} && GuildID = {:guildID} && ConnectionDetails = {:connectionDetails}", // Using named placeholders
+		dbx.Params{"userID": data.UserID, "guildID": data.GuildID, "connectionDetails": data.ConnectionDetails},
 	)
 	// Not checking error for FindFirstRecordByFilter here, as a "not found" is not an error for this logic.
 	// A nil existingRecord means it's safe to create.
 
 	if existingRecord != nil {
-		log.Info("Server record already exists.", "userID", data.UserID, "details", data.ConnectionDetails)
+		log.Info("Server record already exists for this user in this guild.", "userID", data.UserID, "guildID", data.GuildID, "details", data.ConnectionDetails)
 		return nil // Not an error, just already exists
 	}
 
@@ -253,6 +259,7 @@ func CreateRecord(collectionNameOrId string, data *ServerInfo) error {
 
 	// Set fields using Set() method for type safety and internal handling
 	record.Set("UserID", data.UserID)
+	record.Set("GuildID", data.GuildID)
 	record.Set("ConnectionDetails", data.ConnectionDetails)
 
 	// Save the record
@@ -264,29 +271,30 @@ func CreateRecord(collectionNameOrId string, data *ServerInfo) error {
 	return nil
 }
 
-// ListServersByUserID retrieves a list of servers for a given UserID
-func ListServersByUserID(userID string) ([]*ServerInfo, error) {
+// ListServersByUserIDAndGuildID retrieves a list of servers for a given UserID and GuildID
+func ListServersByUserIDAndGuildID(userID string, guildID string) ([]*ServerInfo, error) {
 	currentApp := GetApp()
-	// Retrieve multiple records based on the UserID filter
+	// Retrieve multiple records based on the UserID and GuildID filter
 	records, err := currentApp.FindRecordsByFilter( // Removed .Dao()
-		"servers",                    // collection name or ID
-		"UserID = {:userID}",         // filter with named placeholder
-		"-created",                   // sort (descending by creation date)
-		10,                           // limit
-		0,                            // offset
-		dbx.Params{"userID": userID}, // parameters for the filter
+		"servers",                                 // collection name or ID
+		"UserID = {:userID} && GuildID = {:guildID}", // filter with named placeholders
+		"-created",                                // sort (descending by creation date)
+		10,                                        // limit
+		0,                                         // offset
+		dbx.Params{"userID": userID, "guildID": guildID}, // parameters for the filter
 	)
 	if err != nil {
-		log.Error("Error listing servers by UserID", "userID", userID, "error", err)
+		log.Error("Error listing servers by UserID and GuildID", "userID", userID, "guildID", guildID, "error", err)
 		return nil, err
 	}
 
-	log.Info("Number of records found for UserID", "userID", userID, "count", len(records))
+	log.Info("Number of records found for UserID in GuildID", "userID", userID, "guildID", guildID, "count", len(records))
 
 	var servers []*ServerInfo
 	for _, record := range records {
 		server := &ServerInfo{
 			UserID:            record.GetString("UserID"), // Using GetString for type safety
+			GuildID:           record.GetString("GuildID"),
 			ConnectionDetails: record.GetString("ConnectionDetails"),
 		}
 		servers = append(servers, server)

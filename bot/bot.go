@@ -33,8 +33,8 @@ var (
 	AllowedUserID string
 	AppId         string
 
-	// Voice activity tracking
-	activeSpeakers      = make(map[string]bool)
+	// Voice activity tracking, keyed by guildID, then userID
+	activeSpeakers      = make(map[string]map[string]bool)
 	activeSpeakersMutex sync.RWMutex
 )
 
@@ -216,6 +216,8 @@ func Run() {
 }
 
 var conversationHistoryMap = make(map[string][]map[string]interface{})
+
+// sshConnections stores SSH connection details, keyed by "guildID:userID"
 var sshConnections = make(map[string]*SSHConnection)
 var voiceConnections = make(map[string]*discordgo.VoiceConnection)
 
@@ -326,10 +328,20 @@ func voiceStateUpdate(s *discordgo.Session, vs *discordgo.VoiceStateUpdate) {
 	activeSpeakersMutex.Lock()
 	defer activeSpeakersMutex.Unlock()
 
+	if vs.GuildID == "" { // Should not happen for voice state updates, but good practice
+		return
+	}
+
+	guildSpeakers, ok := activeSpeakers[vs.GuildID]
+	if !ok {
+		guildSpeakers = make(map[string]bool)
+		activeSpeakers[vs.GuildID] = guildSpeakers
+	}
+
 	if vs.SelfMute || vs.SelfDeaf {
-		activeSpeakers[vs.UserID] = false
+		guildSpeakers[vs.UserID] = false
 	} else {
-		activeSpeakers[vs.UserID] = true
+		guildSpeakers[vs.UserID] = true
 	}
 }
 
@@ -397,13 +409,15 @@ func receiveOpusPackets(vc *discordgo.VoiceConnection, guildID string, originalC
 				continue
 			}
 
-			// Check if anyone is speaking in the channel
+			// Check if anyone is speaking in the channel for this specific guild
 			activeSpeakersMutex.RLock()
 			isSpeaking := false
-			for _, speaking := range activeSpeakers {
-				if speaking {
-					isSpeaking = true
-					break
+			if guildSpeakers, ok := activeSpeakers[guildID]; ok {
+				for _, speaking := range guildSpeakers {
+					if speaking {
+						isSpeaking = true
+						break
+					}
 				}
 			}
 			activeSpeakersMutex.RUnlock()
@@ -976,8 +990,9 @@ func commandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 				if err != nil {
 					response = "Error connecting to remote server."
 				} else {
-					sshConnections[i.Member.User.ID] = sshConn
-					serverInfo := &pb.ServerInfo{UserID: i.Member.User.ID, ConnectionDetails: connectionDetails}
+					connectionKey := fmt.Sprintf("%s:%s", i.GuildID, i.Member.User.ID)
+					sshConnections[connectionKey] = sshConn
+					serverInfo := &pb.ServerInfo{UserID: i.Member.User.ID, GuildID: i.GuildID, ConnectionDetails: connectionDetails}
 					err = pb.CreateRecord("servers", serverInfo)
 					if err != nil {
 						log.Error(err)
@@ -991,9 +1006,10 @@ func commandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 		case "exe":
 			if hasAdminRole(i.Member.Roles) {
-				sshConn, ok := sshConnections[i.Member.User.ID]
+				connectionKey := fmt.Sprintf("%s:%s", i.GuildID, i.Member.User.ID)
+				sshConn, ok := sshConnections[connectionKey]
 				if !ok {
-					respondWithMessage(s, i, "You are not connected to any remote server. Use /ssh first.")
+					respondWithMessage(s, i, "You are not connected to any remote server in this guild. Use /ssh first.")
 					return
 				}
 				command := data.Options[0].StringValue()
@@ -1008,13 +1024,14 @@ func commandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 		case "exit":
 			if hasAdminRole(i.Member.Roles) {
-				sshConn, ok := sshConnections[i.Member.User.ID]
+				connectionKey := fmt.Sprintf("%s:%s", i.GuildID, i.Member.User.ID)
+				sshConn, ok := sshConnections[connectionKey]
 				if !ok {
-					respondWithMessage(s, i, "You are not connected to any remote server. Use /ssh first.")
+					respondWithMessage(s, i, "You are not connected to any remote server in this guild. Use /ssh first.")
 					return
 				}
 				sshConn.Close()
-				delete(sshConnections, i.Member.User.ID)
+				delete(sshConnections, connectionKey)
 				respondWithMessage(s, i, "SSH connection closed.")
 			} else {
 				respondWithMessage(s, i, "You are not authorized to use this command.")
@@ -1022,15 +1039,24 @@ func commandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 		case "list":
 			if hasAdminRole(i.Member.Roles) {
-				servers, err := pb.ListServersByUserID(i.Member.User.ID)
-				if err != nil || len(servers) == 0 {
-					respondWithMessage(s, i, "You don't have any servers.")
+				if i.GuildID == "" {
+					respondWithMessage(s, i, "This command can only be used in a server.")
+					return
+				}
+				servers, err := pb.ListServersByUserIDAndGuildID(i.Member.User.ID, i.GuildID)
+				if err != nil {
+					log.Errorf("Error listing servers for user %s in guild %s: %v", i.Member.User.ID, i.GuildID, err)
+					respondWithMessage(s, i, "Could not retrieve server list. Please try again later.")
+					return
+				}
+				if len(servers) == 0 {
+					respondWithMessage(s, i, "You don't have any saved servers in this guild.")
 					return
 				}
 				var serverListMessage strings.Builder
-				serverListMessage.WriteString("Recent servers:\n")
+				serverListMessage.WriteString("Saved servers in this guild:\n")
 				for _, server := range servers {
-					serverListMessage.WriteString(fmt.Sprintf("%s\n", server.ConnectionDetails))
+					serverListMessage.WriteString(fmt.Sprintf("- `%s`\n", server.ConnectionDetails))
 				}
 				respondWithMessage(s, i, serverListMessage.String())
 			} else {
