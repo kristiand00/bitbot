@@ -1643,12 +1643,9 @@ func startReminderScheduler(s *discordgo.Session) {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
-	for {
-		select {
-		case <-ticker.C:
-			log.Debug("Reminder scheduler ticked. Checking for due reminders...")
-			processDueReminders(s)
-		}
+	for range ticker.C {
+		log.Debug("Reminder scheduler ticked. Checking for due reminders...")
+		processDueReminders(s)
 	}
 }
 
