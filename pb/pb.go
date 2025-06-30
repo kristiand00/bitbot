@@ -481,29 +481,34 @@ func recordToReminder(record *core.Record) *Reminder {
 	rawTargetUserIDs := record.Get("target_user_ids")
 	log.Infof("recordToReminder: raw target_user_ids = %#v", rawTargetUserIDs)
 
-	// PocketBase stores JSON array as string internally, Get() returns it as such.
-	// We need to unmarshal it into []string.
-	// However, the `json` field type in PocketBase should automatically handle this
-	// if the struct field is `[]string`. Let's try direct Get() first.
-	// If Get("target_user_ids") returns a string, we'll need json.Unmarshal.
-	// For now, assume PocketBase's Go driver handles this for `Get()` on json fields.
-	// Update: Record.Get() on a json field that is an array of strings might return []interface{}.
-	// We need to convert it.
-	if targetIDs, ok := rawTargetUserIDs.([]interface{}); ok {
-		r.TargetUserIDs = make([]string, len(targetIDs))
-		for i, v := range targetIDs {
-			if idStr, okStr := v.(string); okStr {
+	switch v := rawTargetUserIDs.(type) {
+	case []interface{}:
+		r.TargetUserIDs = make([]string, len(v))
+		for i, val := range v {
+			if idStr, ok := val.(string); ok {
 				r.TargetUserIDs[i] = idStr
 			}
 		}
-	} else if targetIDsStr, okStr := rawTargetUserIDs.(string); okStr && targetIDsStr != "" {
-		// Fallback if it's a JSON string (less ideal from Get)
-		var ids []string
-		if err := json.Unmarshal([]byte(targetIDsStr), &ids); err == nil {
-			r.TargetUserIDs = ids
-		} else {
-			log.Warn("Failed to unmarshal target_user_ids string", "value", targetIDsStr, "error", err)
+	case string:
+		if v != "" {
+			var ids []string
+			if err := json.Unmarshal([]byte(v), &ids); err == nil {
+				r.TargetUserIDs = ids
+			} else {
+				log.Warn("Failed to unmarshal target_user_ids string", "value", v, "error", err)
+			}
 		}
+	case []byte:
+		if len(v) > 0 {
+			var ids []string
+			if err := json.Unmarshal(v, &ids); err == nil {
+				r.TargetUserIDs = ids
+			} else {
+				log.Warn("Failed to unmarshal target_user_ids []byte", "value", string(v), "error", err)
+			}
+		}
+	default:
+		log.Warn("Unknown type for target_user_ids", "type", fmt.Sprintf("%T", v))
 	}
 
 	reminderTimeStr := record.GetString("reminder_time")
