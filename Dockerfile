@@ -1,7 +1,6 @@
 # --- Builder Stage ---
 FROM golang:1.24.1-alpine AS builder
 
-ENV CGO_ENABLED=1
 ENV GOOS=linux
 ENV GOARCH=amd64
 
@@ -9,7 +8,6 @@ WORKDIR /app
 
 COPY go.mod go.sum ./
 
-RUN apk add --no-cache gcc musl-dev pkgconfig sox-dev
 RUN go mod download && go mod verify
 
 COPY . .
@@ -18,8 +16,6 @@ RUN go build -ldflags="-w -s" -o /app/bitbot ./main.go
 
 # --- Final Stage ---
 FROM alpine:3.20
-
-RUN apk add --no-cache opus sox
 
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 

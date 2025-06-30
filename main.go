@@ -121,7 +121,6 @@ func main() {
 	<-stop // Wait for SIGINT or SIGTERM
 
 	log.Info("Shutting down bot...")
-	bot.CleanupAllVoiceSessions() // Call the cleanup function
 	// Any other global cleanup can go here (e.g. closing Discord session if not handled by bot.Run defer)
 	log.Info("Bot shutdown complete.")
 }
