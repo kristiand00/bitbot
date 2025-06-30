@@ -31,6 +31,4 @@ EXPOSE 8090
 
 USER appuser
 
-ENV POCKETBASE_LISTEN=0.0.0.0:8090
-
 ENTRYPOINT ["/app/bitbot", "serve-with-bot"]

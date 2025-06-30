@@ -21,9 +21,13 @@ func main() {
 	// Check if serve command is provided
 	if len(os.Args) > 1 && os.Args[1] == "serve" {
 		log.Info("Starting PocketBase admin UI...")
+		// Set listen address to 0.0.0.0:8090
+		originalArgs := os.Args
+		os.Args = []string{os.Args[0], "serve", "--http=0.0.0.0:8090"}
+		defer func() { os.Args = originalArgs }()
 		pb.Init()
 		app := pb.GetApp()
-		log.Info("PocketBase admin UI will be available at http://127.0.0.1:8090/_/")
+		log.Info("PocketBase admin UI will be available at http://0.0.0.0:8090/_/")
 		if err := app.Start(); err != nil {
 			log.Fatal("Failed to start PocketBase server:", err)
 		}
@@ -70,12 +74,12 @@ func main() {
 
 		// Start PocketBase admin UI by temporarily changing os.Args
 		originalArgs := os.Args
-		os.Args = []string{os.Args[0], "serve"}
+		os.Args = []string{os.Args[0], "serve", "--http=0.0.0.0:8090"}
 		defer func() { os.Args = originalArgs }()
 
 		pb.Init()
 		app := pb.GetApp()
-		log.Info("PocketBase admin UI will be available at http://127.0.0.1:8090/_/")
+		log.Info("PocketBase admin UI will be available at http://0.0.0.0:8090/_/")
 		if err := app.Start(); err != nil {
 			log.Fatal("Failed to start PocketBase server:", err)
 		}
