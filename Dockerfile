@@ -14,8 +14,7 @@ COPY go.mod go.sum ./
 # opus-dev is removed as pion/opus might be pure Go or self-contained CGo.
 # pkgconfig and sox-dev are added for github.com/zaf/resample
 RUN apk add --no-cache gcc musl-dev pkgconfig sox-dev
-RUN go mod download
-RUN go mod verify
+RUN go mod download && go mod verify
 
 # Copy the rest of the application source code
 COPY . .
@@ -25,7 +24,7 @@ COPY . .
 RUN go build -ldflags="-w -s" -o /app/bitbot ./main.go
 
 # --- Final Stage ---
-FROM alpine:latest
+FROM alpine:3.20
 
 # Install run-time dependencies
 # opus is needed by pion/opus (dynamic linking)
@@ -53,8 +52,8 @@ RUN mkdir -p /app/pb_data && chown appuser:appgroup /app/pb_data
 # Assuming PocketBase defaults to "pb_data" in the current working directory of the app.
 VOLUME /app/pb_data
 
-# Expose any ports if the application listens on them (not directly applicable for this Discord bot)
-# EXPOSE 8080
+# Expose the PocketBase admin UI port
+EXPOSE 8090
 
 # Set the user for running the application
 USER appuser
@@ -69,5 +68,5 @@ ENV ADMIN_DISCORD_ID=""
 # PocketBase specific env vars if needed (e.g., for data directory, though it defaults to pb_data)
 # ENV PB_DATA_DIR="/app/pb_data"
 
-# Command to run the application
-ENTRYPOINT ["/app/bitbot"]
+# Command to run the application with the bot and PocketBase admin panel
+ENTRYPOINT ["/app/bitbot", "serve-with-bot"]

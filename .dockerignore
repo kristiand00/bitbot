@@ -1,0 +1,26 @@
+# Git files
+.git
+.gitignore
+
+# Go build cache
+.cache
+
+# Development tools
+.vscode
+.idea
+
+# Environment files
+.env
+.env.*
+!/.env.example
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Documentation
+*.md
+LICENSE
+
+# PocketBase data directory should not be included in the image
+pb_data 
