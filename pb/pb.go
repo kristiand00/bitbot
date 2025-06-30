@@ -186,7 +186,7 @@ func ensureServersCollection() error {
 
 	collection.Fields.Add(&core.TextField{
 		Name:     "GuildID", // Added GuildID field
-		Required: true,    // Assuming GuildID is required for server records
+		Required: true,      // Assuming GuildID is required for server records
 	})
 
 	collection.Fields.Add(&core.TextField{
@@ -276,11 +276,11 @@ func ListServersByUserIDAndGuildID(userID string, guildID string) ([]*ServerInfo
 	currentApp := GetApp()
 	// Retrieve multiple records based on the UserID and GuildID filter
 	records, err := currentApp.FindRecordsByFilter( // Removed .Dao()
-		"servers",                                 // collection name or ID
+		"servers", // collection name or ID
 		"UserID = {:userID} && GuildID = {:guildID}", // filter with named placeholders
-		"-created",                                // sort (descending by creation date)
-		10,                                        // limit
-		0,                                         // offset
+		"-created", // sort (descending by creation date)
+		10,         // limit
+		0,          // offset
 		dbx.Params{"userID": userID, "guildID": guildID}, // parameters for the filter
 	)
 	if err != nil {
@@ -317,7 +317,11 @@ func CreateReminder(data *Reminder) error {
 
 	record := core.NewRecord(collection)
 	record.Set("user_id", data.UserID)
-	record.Set("target_user_ids", data.TargetUserIDs) // PocketBase handles JSON marshalling for 'json' type fields
+
+	log.Infof("CreateReminder: target_user_ids = %v", data.TargetUserIDs)
+	b, _ := json.Marshal(data.TargetUserIDs)
+	record.Set("target_user_ids", string(b)) // Explicitly marshal to JSON string
+
 	record.Set("message", data.Message)
 	record.Set("channel_id", data.ChannelID)
 	record.Set("guild_id", data.GuildID)

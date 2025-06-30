@@ -540,6 +540,8 @@ func handleAddReminder(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		reminder.NextReminderTime = reminderTime
 	}
 
+	log.Infof("handleAddReminder: about to save reminder with targetUserIDs: %v", targetUserIDs)
+
 	// 4. Save to PocketBase
 	err = pb.CreateReminder(reminder)
 	if err != nil {
