@@ -925,8 +925,10 @@ func handleListReminders(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 
 	timeFormat := "Jan 2, 2006 at 3:04 PM MST"
-	var components []discordgo.MessageComponent
+	var contentBuilder strings.Builder
+	var deleteButtons []discordgo.MessageComponent
 
+	contentBuilder.WriteString("**Your active reminders:**\n")
 	for idx, r := range reminders {
 		var nextDue time.Time
 		if r.IsRecurring {
@@ -952,39 +954,36 @@ func handleListReminders(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		}
 		targetStr := strings.Join(targets, ", ")
 
-		// Build the reminder text
-		reminderText := fmt.Sprintf("%d. **ID**: `%s`\n   **To**: %s\n   **Message**: %s\n   **Next Due**: %s\n", idx+1, r.ID, targetStr, r.Message, nextDueStr)
+		contentBuilder.WriteString(fmt.Sprintf("%d. **ID**: `%s`\n   **To**: %s\n   **Message**: %s\n   **Next Due**: %s\n", idx+1, r.ID, targetStr, r.Message, nextDueStr))
 		if r.IsRecurring {
-			reminderText += fmt.Sprintf("   **Recurs**: %s\n", r.RecurrenceRule)
+			contentBuilder.WriteString(fmt.Sprintf("   **Recurs**: %s\n", r.RecurrenceRule))
 		}
+		contentBuilder.WriteString("\n")
 
-		// Add the text as a separate ActionsRow with a label (using a disabled button for formatting)
-		components = append(components, &discordgo.ActionsRow{
-			Components: []discordgo.MessageComponent{
-				&discordgo.Button{
-					Label:    reminderText,
-					CustomID: fmt.Sprintf("reminder_label_%s", r.ID),
-					Style:    discordgo.SecondaryButton,
-					Disabled: true,
-				},
-			},
+		// Add a delete button for this reminder
+		deleteButtons = append(deleteButtons, &discordgo.Button{
+			Label:    "Delete",
+			CustomID: fmt.Sprintf("reminder_delete_%s", r.ID),
+			Style:    discordgo.DangerButton,
 		})
-		// Add the delete button for this reminder
+	}
+
+	// Group delete buttons into rows of up to 5
+	var components []discordgo.MessageComponent
+	for i := 0; i < len(deleteButtons); i += 5 {
+		end := i + 5
+		if end > len(deleteButtons) {
+			end = len(deleteButtons)
+		}
 		components = append(components, &discordgo.ActionsRow{
-			Components: []discordgo.MessageComponent{
-				&discordgo.Button{
-					Label:    "Delete",
-					CustomID: fmt.Sprintf("reminder_delete_%s", r.ID),
-					Style:    discordgo.DangerButton,
-				},
-			},
+			Components: deleteButtons[i:end],
 		})
 	}
 
 	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
-			Content:    "**Your active reminders:**",
+			Content:    contentBuilder.String(),
 			Components: components,
 			Flags:      discordgo.MessageFlagsEphemeral, // Only visible to the user
 		},
