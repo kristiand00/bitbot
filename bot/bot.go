@@ -567,7 +567,8 @@ func handleAddReminder(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		targetUsersString = append(targetUsersString, fmt.Sprintf("<@%s>", uid))
 	}
 
-	timeFormat := "Jan 2, 2006 at 3:04 PM MST"
+	// Use a custom time format and explicitly mention the time zone
+	timeFormat := "Jan 2, 2006 at 15:04 (Europe/Zagreb)"
 	confirmationMsg := fmt.Sprintf("Okay, I'll remind %s on %s about: \"%s\"",
 		strings.Join(targetUsersString, ", "),
 		reminderTime.In(reminderLocation).Format(timeFormat), // Display in local time for confirmation
