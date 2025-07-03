@@ -128,6 +128,16 @@ var (
 	// var registeredCommands = make(map[string]*discordgo.ApplicationCommand)
 )
 
+var reminderLocation *time.Location
+
+func init() {
+	var err error
+	reminderLocation, err = time.LoadLocation("Europe/Zagreb")
+	if err != nil {
+		reminderLocation = time.UTC
+	}
+}
+
 func Run() {
 	discord, err := discordgo.New("Bot " + BotToken)
 	if err != nil {
@@ -560,7 +570,7 @@ func handleAddReminder(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	timeFormat := "Jan 2, 2006 at 3:04 PM MST"
 	confirmationMsg := fmt.Sprintf("Okay, I'll remind %s on %s about: \"%s\"",
 		strings.Join(targetUsersString, ", "),
-		reminderTime.Local().Format(timeFormat), // Display in local time for confirmation
+		reminderTime.In(reminderLocation).Format(timeFormat), // Display in local time for confirmation
 		messageArg)
 	if isRecurring {
 		confirmationMsg += fmt.Sprintf(" (recurs %s)", recurrenceRule)
@@ -573,7 +583,7 @@ func handleAddReminder(s *discordgo.Session, i *discordgo.InteractionCreate) {
 // Returns: reminderTime, isRecurring, recurrenceRule, error
 func parseWhenSimple(whenStr string) (time.Time, bool, string, error) {
 	whenStr = strings.ToLower(strings.TrimSpace(whenStr))
-	now := time.Now()
+	now := time.Now().In(reminderLocation)
 	isRecurring := false
 	recurrenceRule := ""
 
@@ -832,7 +842,7 @@ func parseTimeOfDay(timeStr string) (time.Time, error) {
 			return time.Time{}, fmt.Errorf("time out of range: %02d:%02d", hour, minute)
 		}
 
-		return time.Date(2000, 1, 1, hour, minute, 0, 0, time.UTC), nil
+		return time.Date(2000, 1, 1, hour, minute, 0, 0, reminderLocation), nil
 	}
 
 	// Handle 24-hour format
@@ -855,7 +865,7 @@ func parseTimeOfDay(timeStr string) (time.Time, error) {
 			return time.Time{}, fmt.Errorf("time out of range: %02d:%02d", hour, minute)
 		}
 
-		return time.Date(2000, 1, 1, hour, minute, 0, 0, time.UTC), nil
+		return time.Date(2000, 1, 1, hour, minute, 0, 0, reminderLocation), nil
 	}
 
 	return time.Time{}, fmt.Errorf("unsupported time format: %s", timeStr)
@@ -887,7 +897,7 @@ func parseNextDay(dayStr string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("unknown day: %s", dayStr)
 	}
 
-	now := time.Now()
+	now := time.Now().In(reminderLocation)
 	currentDay := now.Weekday()
 
 	// Calculate days until next occurrence
@@ -928,7 +938,7 @@ func handleListReminders(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 		var nextDueStr string
 		if !nextDue.IsZero() {
-			nextDueStr = nextDue.Local().Format(timeFormat)
+			nextDueStr = nextDue.In(reminderLocation).Format(timeFormat)
 		} else {
 			nextDueStr = "N/A (Error in time)"
 		}
@@ -1106,13 +1116,13 @@ func processDueReminders(s *discordgo.Session) {
 			}
 
 			reminder.NextReminderTime = nextTime
-			reminder.LastTriggeredAt = time.Now().UTC() // Set last triggered to now
+			reminder.LastTriggeredAt = time.Now().In(reminderLocation) // Set last triggered to now
 
 			errUpdate := pb.UpdateReminder(reminder)
 			if errUpdate != nil {
 				log.Errorf("Failed to update recurring reminder ID %s with next time %v: %v", reminder.ID, nextTime, errUpdate)
 			} else {
-				log.Infof("Updated recurring reminder ID %s. Next occurrence: %s", reminder.ID, nextTime.Format(time.RFC1123))
+				log.Infof("Updated recurring reminder ID %s. Next occurrence: %s", reminder.ID, nextTime.In(reminderLocation).Format(time.RFC1123))
 			}
 		}
 	}
@@ -1122,7 +1132,7 @@ func processDueReminders(s *discordgo.Session) {
 // This is a simplified version based on parseWhenSimple's output.
 // Enhanced to parse more complex RecurrenceRule (e.g., "every day", "every monday").
 func calculateNextRecurrence(originalReminderTime time.Time, rule string, lastTriggeredTime time.Time) (time.Time, error) {
-	now := time.Now()
+	now := time.Now().In(reminderLocation)
 	// If lastTriggeredTime is zero (first time for a recurring one after initial setup),
 	// or if originalReminderTime is in the future (e.g. reminder set "every day at 9am" but it's 8am now),
 	// the next time *might* still be the originalReminderTime if it hasn't passed.
