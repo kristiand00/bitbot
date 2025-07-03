@@ -533,22 +533,23 @@ func handleAddReminder(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 
 	// 3. Create Reminder struct
-	reminder := &pb.Reminder{
-		UserID:         i.Member.User.ID,
-		TargetUserIDs:  targetUserIDs,
-		Message:        messageArg,
-		ChannelID:      i.ChannelID,
-		GuildID:        i.GuildID, // Will be empty for DMs, which is fine
-		ReminderTime:   reminderTime,
-		IsRecurring:    isRecurring,
-		RecurrenceRule: recurrenceRule,
-	}
-	// For non-recurring, NextReminderTime is same as ReminderTime initially by GetDueReminders logic.
-	// For recurring, NextReminderTime should be the first actual occurrence.
-	// Our simple parser sets ReminderTime to the first occurrence.
-	// If it's recurring, we'll set NextReminderTime to this first occurrence.
+	// Ensure reminderTime and NextReminderTime are in Europe/Zagreb
+	reminderTime = reminderTime.In(reminderLocation)
+	var nextReminderTime time.Time
 	if isRecurring {
-		reminder.NextReminderTime = reminderTime
+		nextReminderTime = reminderTime
+	}
+
+	reminder := &pb.Reminder{
+		UserID:           i.Member.User.ID,
+		TargetUserIDs:    targetUserIDs,
+		Message:          messageArg,
+		ChannelID:        i.ChannelID,
+		GuildID:          i.GuildID, // Will be empty for DMs, which is fine
+		ReminderTime:     reminderTime,
+		IsRecurring:      isRecurring,
+		RecurrenceRule:   recurrenceRule,
+		NextReminderTime: nextReminderTime,
 	}
 
 	log.Infof("handleAddReminder: about to save reminder with targetUserIDs: %v", targetUserIDs)
@@ -652,6 +653,53 @@ func parseWhenSimple(whenStr string) (time.Time, bool, string, error) {
 		return result, isRecurring, recurrenceRule, nil
 	}
 
+	// Handle "tomorrow Xam/pm" format (without 'at')
+	if strings.HasPrefix(whenStr, "tomorrow ") {
+		timePart := strings.TrimPrefix(whenStr, "tomorrow ")
+		parsedTime, err := parseTimeOfDay(timePart)
+		if err != nil {
+			return time.Time{}, false, "", fmt.Errorf("invalid time format in 'tomorrow %s': %v", timePart, err)
+		}
+
+		tomorrow := now.AddDate(0, 0, 1)
+		result := time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(),
+			parsedTime.Hour(), parsedTime.Minute(), 0, 0, now.Location())
+
+		return result, isRecurring, recurrenceRule, nil
+	}
+
+	// Handle "today at Xam/pm" or "today at X" format
+	if strings.HasPrefix(whenStr, "today at ") {
+		timePart := strings.TrimPrefix(whenStr, "today at ")
+		parsedTime, err := parseTimeOfDay(timePart)
+		if err != nil {
+			return time.Time{}, false, "", fmt.Errorf("invalid time format in 'today at %s': %v", timePart, err)
+		}
+
+		target := time.Date(now.Year(), now.Month(), now.Day(),
+			parsedTime.Hour(), parsedTime.Minute(), 0, 0, now.Location())
+		if target.Before(now) {
+			target = target.AddDate(0, 0, 1) // Move to tomorrow if time has passed today
+		}
+		return target, isRecurring, recurrenceRule, nil
+	}
+
+	// Handle "today Xam/pm" or "today X" format (without 'at')
+	if strings.HasPrefix(whenStr, "today ") {
+		timePart := strings.TrimPrefix(whenStr, "today ")
+		parsedTime, err := parseTimeOfDay(timePart)
+		if err != nil {
+			return time.Time{}, false, "", fmt.Errorf("invalid time format in 'today %s': %v", timePart, err)
+		}
+
+		target := time.Date(now.Year(), now.Month(), now.Day(),
+			parsedTime.Hour(), parsedTime.Minute(), 0, 0, now.Location())
+		if target.Before(now) {
+			target = target.AddDate(0, 0, 1) // Move to tomorrow if time has passed today
+		}
+		return target, isRecurring, recurrenceRule, nil
+	}
+
 	// Handle "next [day] at Xam/pm" format
 	if strings.HasPrefix(whenStr, "next ") && strings.Contains(whenStr, " at ") {
 		parts := strings.SplitN(whenStr, " at ", 2)
@@ -676,6 +724,26 @@ func parseWhenSimple(whenStr string) (time.Time, bool, string, error) {
 			parsedTime.Hour(), parsedTime.Minute(), 0, 0, now.Location())
 
 		return result, isRecurring, recurrenceRule, nil
+	}
+
+	// Handle "next [day] Xam/pm" format (without 'at')
+	if strings.HasPrefix(whenStr, "next ") {
+		parts := strings.SplitN(whenStr, " ", 3)
+		if len(parts) == 3 {
+			dayPart := parts[1]
+			timePart := parts[2]
+			parsedTime, err := parseTimeOfDay(timePart)
+			if err != nil {
+				return time.Time{}, false, "", fmt.Errorf("invalid time format: %v", err)
+			}
+			nextDay, err := parseNextDay(dayPart)
+			if err != nil {
+				return time.Time{}, false, "", fmt.Errorf("invalid day format: %v", err)
+			}
+			result := time.Date(nextDay.Year(), nextDay.Month(), nextDay.Day(),
+				parsedTime.Hour(), parsedTime.Minute(), 0, 0, now.Location())
+			return result, isRecurring, recurrenceRule, nil
+		}
 	}
 
 	// Handle "every day at Xam/pm" format
@@ -741,22 +809,6 @@ func parseWhenSimple(whenStr string) (time.Time, bool, string, error) {
 			recurrenceRule = fmt.Sprintf("every %s", wd)
 			return result, true, recurrenceRule, nil
 		}
-	}
-
-	// Handle "today at Xam/pm" or "today at X" format
-	if strings.HasPrefix(whenStr, "today at ") {
-		timePart := strings.TrimPrefix(whenStr, "today at ")
-		parsedTime, err := parseTimeOfDay(timePart)
-		if err != nil {
-			return time.Time{}, false, "", fmt.Errorf("invalid time format in 'today at %s': %v", timePart, err)
-		}
-
-		target := time.Date(now.Year(), now.Month(), now.Day(),
-			parsedTime.Hour(), parsedTime.Minute(), 0, 0, now.Location())
-		if target.Before(now) {
-			target = target.AddDate(0, 0, 1) // Move to tomorrow if time has passed today
-		}
-		return target, isRecurring, recurrenceRule, nil
 	}
 
 	// Handle "at Xam/pm" or "at X" format (treat as today at X)
@@ -924,12 +976,12 @@ func handleListReminders(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		return
 	}
 
-	timeFormat := "Jan 2, 2006 at 3:04 PM MST"
+	timeFormat := "Jan 2, 2006 at 3:04 PM (Europe/Zagreb)"
 	var contentBuilder strings.Builder
-	var deleteButtons []discordgo.MessageComponent
+	var components []discordgo.MessageComponent
 
-	contentBuilder.WriteString("**Your active reminders:**\n")
-	for idx, r := range reminders {
+	contentBuilder.WriteString("**Your active reminders:**\n\n")
+	for _, r := range reminders {
 		var nextDue time.Time
 		if r.IsRecurring {
 			nextDue = r.NextReminderTime
@@ -954,29 +1006,21 @@ func handleListReminders(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		}
 		targetStr := strings.Join(targets, ", ")
 
-		contentBuilder.WriteString(fmt.Sprintf("%d. **ID**: `%s`\n   **To**: %s\n   **Message**: %s\n   **Next Due**: %s\n", idx+1, r.ID, targetStr, r.Message, nextDueStr))
+		contentBuilder.WriteString(fmt.Sprintf("To: %s\nMessage: %s\nNext Due: %s\n", targetStr, r.Message, nextDueStr))
 		if r.IsRecurring {
-			contentBuilder.WriteString(fmt.Sprintf("   **Recurs**: %s\n", r.RecurrenceRule))
+			contentBuilder.WriteString(fmt.Sprintf("Recurs: %s\n", r.RecurrenceRule))
 		}
 		contentBuilder.WriteString("\n")
 
-		// Add a delete button for this reminder
-		deleteButtons = append(deleteButtons, &discordgo.Button{
-			Label:    "Delete",
-			CustomID: fmt.Sprintf("reminder_delete_%s", r.ID),
-			Style:    discordgo.DangerButton,
-		})
-	}
-
-	// Group delete buttons into rows of up to 5
-	var components []discordgo.MessageComponent
-	for i := 0; i < len(deleteButtons); i += 5 {
-		end := i + 5
-		if end > len(deleteButtons) {
-			end = len(deleteButtons)
-		}
+		// Add a delete button for this reminder immediately after its text
 		components = append(components, &discordgo.ActionsRow{
-			Components: deleteButtons[i:end],
+			Components: []discordgo.MessageComponent{
+				&discordgo.Button{
+					Label:    "Delete",
+					CustomID: fmt.Sprintf("reminder_delete_%s", r.ID),
+					Style:    discordgo.DangerButton,
+				},
+			},
 		})
 	}
 
