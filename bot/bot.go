@@ -73,18 +73,6 @@ var (
 			},
 		},
 		{
-			Name:        "roll",
-			Description: "Roll a random number.",
-			Options: []*discordgo.ApplicationCommandOption{
-				{
-					Name:        "max",
-					Description: "Specify the maximum number for the roll.",
-					Type:        discordgo.ApplicationCommandOptionInteger,
-					Required:    false,
-				},
-			},
-		},
-		{
 			Name:        "remind",
 			Description: "Manage reminders.",
 			Options: []*discordgo.ApplicationCommandOption{
@@ -208,6 +196,20 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 
 	if strings.HasPrefix(message.Content, "!bit") || isPrivateChannel {
 		chatGPT(discord, message.ChannelID, message.Content)
+	}
+
+	if strings.HasPrefix(message.Content, "!roll") {
+		max := 100
+		parts := strings.Fields(message.Content)
+		if len(parts) > 1 {
+			if val, err := strconv.Atoi(parts[1]); err == nil && val > 0 {
+				max = val
+			}
+		}
+		result := rand.Intn(max) + 1
+		response := fmt.Sprintf("%s rolled: %d (1-%d)", message.Author.Mention(), result, max)
+		discord.ChannelMessageSend(message.ChannelID, response)
+		return
 	}
 }
 
@@ -409,7 +411,13 @@ func commandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		case "help":
 			helpMessage := "Available commands:\n" +
 				"/cry - Get information about cryptocurrency prices.\n" +
-				"/roll - Roll a random number.\n" +
+				"/remind - Manage reminders.\n" +
+				"    /remind add <who> <when> <message> - Add a reminder.\n" +
+				"      <when> supports: 'in 10m', 'in 2h', 'in 3d', 'tomorrow at 8pm', 'next monday at 9:30am', 'every day at 8am', 'every monday 8pm', 'today at 8pm', 'at 8pm', '8pm', '20:00'\n" +
+				"      Tips: If the time has already passed today, the reminder will be set for tomorrow.\n" +
+				"      Use '@me' for yourself in <who>.\n" +
+				"    /remind list - List your reminders.\n" +
+				"    /remind delete <id> - Delete a reminder by its ID.\n" +
 				"/help - Show available commands.\n"
 			if len(data.Options) > 0 && data.Options[0].StringValue() == "admin" {
 				helpMessage += "Admin commands:\n" +
@@ -423,13 +431,6 @@ func commandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			}
 			respondWithMessage(s, i, helpMessage)
 
-		case "roll":
-			max := 100
-			if len(data.Options) > 0 {
-				max = int(data.Options[0].IntValue())
-			}
-			result := rand.Intn(max) + 1
-			respondWithMessage(s, i, fmt.Sprintf("You rolled: %d", result))
 		case "remind":
 			// Delegate to a sub-handler for /remind subcommands
 			handleRemindCommand(s, i)
@@ -731,12 +732,54 @@ func parseWhenSimple(whenStr string) (time.Time, bool, string, error) {
 		}
 	}
 
+	// Handle "today at Xam/pm" or "today at X" format
+	if strings.HasPrefix(whenStr, "today at ") {
+		timePart := strings.TrimPrefix(whenStr, "today at ")
+		parsedTime, err := parseTimeOfDay(timePart)
+		if err != nil {
+			return time.Time{}, false, "", fmt.Errorf("invalid time format in 'today at %s': %v", timePart, err)
+		}
+
+		target := time.Date(now.Year(), now.Month(), now.Day(),
+			parsedTime.Hour(), parsedTime.Minute(), 0, 0, now.Location())
+		if target.Before(now) {
+			target = target.AddDate(0, 0, 1) // Move to tomorrow if time has passed today
+		}
+		return target, isRecurring, recurrenceRule, nil
+	}
+
+	// Handle "at Xam/pm" or "at X" format (treat as today at X)
+	if strings.HasPrefix(whenStr, "at ") {
+		timePart := strings.TrimPrefix(whenStr, "at ")
+		parsedTime, err := parseTimeOfDay(timePart)
+		if err != nil {
+			return time.Time{}, false, "", fmt.Errorf("invalid time format in 'at %s': %v", timePart, err)
+		}
+
+		target := time.Date(now.Year(), now.Month(), now.Day(),
+			parsedTime.Hour(), parsedTime.Minute(), 0, 0, now.Location())
+		if target.Before(now) {
+			target = target.AddDate(0, 0, 1) // Move to tomorrow if time has passed today
+		}
+		return target, isRecurring, recurrenceRule, nil
+	}
+
+	// Handle just a time string (e.g., "8pm", "20:00")
+	if t, err := parseTimeOfDay(whenStr); err == nil {
+		target := time.Date(now.Year(), now.Month(), now.Day(),
+			t.Hour(), t.Minute(), 0, 0, now.Location())
+		if target.Before(now) {
+			target = target.AddDate(0, 0, 1)
+		}
+		return target, isRecurring, recurrenceRule, nil
+	}
+
 	// For now, only "in Xm/h/d" is supported for non-recurring.
 	// And "every Xm/h/d" for recurring.
 	if isRecurring {
-		return time.Time{}, false, "", fmt.Errorf("unsupported recurring format: '%s'. Try 'every Xm/Xh/Xd' or 'every day at Xam/pm'", whenStr)
+		return time.Time{}, false, "", fmt.Errorf("unsupported recurring format: '%s'. Try 'every Xm/Xh/Xd', 'every day at Xam/pm', or 'every monday 8pm'. Tip: You can also use 'every day at 8am', 'every monday 8pm', etc.", whenStr)
 	}
-	return time.Time{}, false, "", fmt.Errorf("unsupported time format: '%s'. Try 'in Xm/Xh/Xd', 'tomorrow at Xam/pm', or 'next [day] at Xam/pm'", whenStr)
+	return time.Time{}, false, "", fmt.Errorf("unsupported time format: '%s'. Try 'in Xm/Xh/Xd', 'tomorrow at Xam/pm', 'next [day] at Xam/pm', 'today at 8pm', 'at 8pm', or just '8pm'. Tip: If the time has already passed today, the reminder will be set for tomorrow.", whenStr)
 }
 
 // parseTimeOfDay parses time strings like "10am", "3:30pm", "14:30"
