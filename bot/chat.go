@@ -100,52 +100,8 @@ func InitGeminiClient(apiKey string) error {
 	return nil
 }
 
-func listAvailableModels(ctx context.Context) error {
-	log.Info("Listing available models...")
-
-	apiURL := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models?key=%s", geminiAPIKey)
-	resp, err := httpClient.Get(apiURL)
-	if err != nil {
-		return fmt.Errorf("failed to list models: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to list models with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var result struct {
-		Models []struct {
-			Name                       string   `json:"name"`
-			DisplayName                string   `json:"displayName"`
-			Description                string   `json:"description"`
-			SupportedGenerationMethods []string `json:"supportedGenerationMethods"`
-		} `json:"models"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return fmt.Errorf("failed to decode models response: %v", err)
-	}
-
-	log.Info("Available models:")
-	for _, model := range result.Models {
-		log.Infof("Model: %s", model.Name)
-		log.Infof("  DisplayName: %s", model.DisplayName)
-		log.Infof("  Description: %s", model.Description)
-		log.Infof("  Supported Methods: %v", model.SupportedGenerationMethods)
-		log.Info("---")
-	}
-	return nil
-}
-
 func testModelAvailability(ctx context.Context) error {
 	startTime := time.Now()
-
-	// First, list available models
-	if err := listAvailableModels(ctx); err != nil {
-		log.Warnf("Failed to list models: %v", err)
-	}
 
 	log.Info("Testing text model availability...")
 
