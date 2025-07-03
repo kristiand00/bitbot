@@ -925,8 +925,6 @@ func handleListReminders(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 	timeFormat := "Jan 2, 2006 at 3:04 PM MST"
 	var components []discordgo.MessageComponent
-	var response strings.Builder
-	response.WriteString("**Your active reminders:**\n")
 
 	for idx, r := range reminders {
 		var nextDue time.Time
@@ -953,16 +951,24 @@ func handleListReminders(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		}
 		targetStr := strings.Join(targets, ", ")
 
-		response.WriteString(fmt.Sprintf("%d. **ID**: `%s`\n", idx+1, r.ID))
-		response.WriteString(fmt.Sprintf("   **To**: %s\n", targetStr))
-		response.WriteString(fmt.Sprintf("   **Message**: %s\n", r.Message))
-		response.WriteString(fmt.Sprintf("   **Next Due**: %s\n", nextDueStr))
+		// Build the reminder text
+		reminderText := fmt.Sprintf("%d. **ID**: `%s`\n   **To**: %s\n   **Message**: %s\n   **Next Due**: %s\n", idx+1, r.ID, targetStr, r.Message, nextDueStr)
 		if r.IsRecurring {
-			response.WriteString(fmt.Sprintf("   **Recurs**: %s\n", r.RecurrenceRule))
+			reminderText += fmt.Sprintf("   **Recurs**: %s\n", r.RecurrenceRule)
 		}
-		response.WriteString("\n")
 
-		// Add a delete button for this reminder
+		// Add the text as a separate ActionsRow with a label (using a disabled button for formatting)
+		components = append(components, &discordgo.ActionsRow{
+			Components: []discordgo.MessageComponent{
+				&discordgo.Button{
+					Label:    reminderText,
+					CustomID: fmt.Sprintf("reminder_label_%s", r.ID),
+					Style:    discordgo.SecondaryButton,
+					Disabled: true,
+				},
+			},
+		})
+		// Add the delete button for this reminder
 		components = append(components, &discordgo.ActionsRow{
 			Components: []discordgo.MessageComponent{
 				&discordgo.Button{
@@ -977,8 +983,9 @@ func handleListReminders(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
-			Content:    response.String(),
+			Content:    "**Your active reminders:**",
 			Components: components,
+			Flags:      discordgo.MessageFlagsEphemeral, // Only visible to the user
 		},
 	})
 	if err != nil {
