@@ -981,7 +981,7 @@ func handleListReminders(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	var components []discordgo.MessageComponent
 
 	contentBuilder.WriteString("**Your active reminders:**\n\n")
-	for _, r := range reminders {
+	for idx, r := range reminders {
 		var nextDue time.Time
 		if r.IsRecurring {
 			nextDue = r.NextReminderTime
@@ -998,25 +998,21 @@ func handleListReminders(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 		var targets []string
 		for _, tUID := range r.TargetUserIDs {
-			if tUID == userID {
-				targets = append(targets, "@me")
-			} else {
-				targets = append(targets, fmt.Sprintf("<@%s>", tUID))
-			}
+			targets = append(targets, fmt.Sprintf("<@%s>", tUID))
 		}
 		targetStr := strings.Join(targets, ", ")
 
-		contentBuilder.WriteString(fmt.Sprintf("To: %s\nMessage: %s\nNext Due: %s\n", targetStr, r.Message, nextDueStr))
+		contentBuilder.WriteString(fmt.Sprintf("%d. To: %s\nMessage: %s\nNext Due: %s\n", idx+1, targetStr, r.Message, nextDueStr))
 		if r.IsRecurring {
 			contentBuilder.WriteString(fmt.Sprintf("Recurs: %s\n", r.RecurrenceRule))
 		}
 		contentBuilder.WriteString("\n")
 
-		// Add a delete button for this reminder immediately after its text
+		// Add a numbered delete button for this reminder immediately after its text
 		components = append(components, &discordgo.ActionsRow{
 			Components: []discordgo.MessageComponent{
 				&discordgo.Button{
-					Label:    "Delete",
+					Label:    fmt.Sprintf("Delete %d", idx+1),
 					CustomID: fmt.Sprintf("reminder_delete_%s", r.ID),
 					Style:    discordgo.DangerButton,
 				},
