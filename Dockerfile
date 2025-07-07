@@ -19,6 +19,12 @@ FROM alpine:3.20
 
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
+# Install tzdata and set the time zone
+RUN apk add --no-cache tzdata \
+    && cp /usr/share/zoneinfo/Europe/Zagreb /etc/localtime \
+    && echo "Europe/Zagreb" > /etc/timezone
+ENV TZ=Europe/Zagreb
+
 WORKDIR /app
 
 COPY --from=builder /app/bitbot /app/bitbot
