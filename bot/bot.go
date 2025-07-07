@@ -14,7 +14,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/charmbracelet/log"
-	// New GenAI import
+	// No need to import reminder if it's in the same package; use local references instead.
 )
 
 var (
@@ -442,678 +442,62 @@ func commandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			respondWithMessage(s, i, helpMessage)
 
 		case "remind":
-			// Delegate to a sub-handler for /remind subcommands
-			handleRemindCommand(s, i)
+			HandleRemindCommand(s, i)
 		}
 	} else if i.Type == discordgo.InteractionModalSubmit {
 		modalHandler(s, i)
 	}
 }
 
-// handleRemindCommand delegates processing for /remind subcommands
-func handleRemindCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	subCommand := i.ApplicationCommandData().Options[0].Name
-	switch subCommand {
-	case "add":
-		handleAddReminder(s, i)
-	case "list":
-		handleListReminders(s, i)
-	case "delete":
-		handleDeleteReminder(s, i)
-	default:
-		respondWithMessage(s, i, "Unknown remind subcommand.")
-	}
-}
+func modalHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if i.Type == discordgo.InteractionModalSubmit && i.ModalSubmitData().CustomID == "event_modal" {
+		data := i.ModalSubmitData()
 
-// Helper to get user ID from InteractionCreate (works for DMs and guilds)
-func getUserID(i *discordgo.InteractionCreate) string {
-	if i.Member != nil && i.Member.User != nil {
-		return i.Member.User.ID
-	}
-	if i.User != nil {
-		return i.User.ID
-	}
-	return ""
-}
+		title := data.Components[0].(*discordgo.ActionsRow).Components[0].(*discordgo.TextInput).Value
+		date := data.Components[1].(*discordgo.ActionsRow).Components[0].(*discordgo.TextInput).Value
+		time := data.Components[2].(*discordgo.ActionsRow).Components[0].(*discordgo.TextInput).Value
+		note := data.Components[3].(*discordgo.ActionsRow).Components[0].(*discordgo.TextInput).Value
 
-// handleAddReminder processes the /remind add command.
-func handleAddReminder(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	options := i.ApplicationCommandData().Options[0].Options // Options for the "add" subcommand
-
-	var whoArg, whenArg, messageArg string
-	for _, opt := range options {
-		switch opt.Name {
-		case "who":
-			whoArg = opt.StringValue()
-		case "when":
-			whenArg = opt.StringValue()
-		case "message":
-			messageArg = opt.StringValue()
-		}
-	}
-
-	if whoArg == "" || whenArg == "" || messageArg == "" {
-		respondWithMessage(s, i, "Missing required arguments for adding a reminder.")
-		return
-	}
-
-	// 1. Parse 'who' argument
-	var targetUserIDs []string
-	rawTargetUserIDs := strings.Split(whoArg, ",")
-	for _, idStr := range rawTargetUserIDs {
-		trimmedID := strings.TrimSpace(idStr)
-		if trimmedID == "@me" {
-			targetUserIDs = append(targetUserIDs, getUserID(i))
-		} else {
-			// Basic validation: check if it's a user mention or a raw ID
-			// <@USER_ID> or <@!USER_ID>
-			re := regexp.MustCompile(`<@!?(\d+)>`)
-			matches := re.FindStringSubmatch(trimmedID)
-			if len(matches) == 2 {
-				targetUserIDs = append(targetUserIDs, matches[1])
-			} else if _, err := strconv.ParseUint(trimmedID, 10, 64); err == nil {
-				// Looks like a raw ID
-				targetUserIDs = append(targetUserIDs, trimmedID)
-			} else {
-				respondWithMessage(s, i, fmt.Sprintf("Invalid user format: '%s'. Please use @mention, user ID, or '@me'.", trimmedID))
-				return
-			}
-		}
-	}
-	if len(targetUserIDs) == 0 {
-		respondWithMessage(s, i, "No valid target users specified.")
-		return
-	}
-	// Remove duplicates
-	seen := make(map[string]bool)
-	uniqueTargetUserIDs := []string{}
-	for _, id := range targetUserIDs {
-		if !seen[id] {
-			seen[id] = true
-			uniqueTargetUserIDs = append(uniqueTargetUserIDs, id)
-		}
-	}
-	targetUserIDs = uniqueTargetUserIDs
-
-	// 2. Parse 'when' argument (initial simple parsing)
-	// TODO: Expand this with more robust parsing (date, time, recurring)
-	reminderTime, isRecurring, recurrenceRule, err := parseWhenSimple(whenArg)
-	if err != nil {
-		respondWithMessage(s, i, fmt.Sprintf("Error parsing 'when' argument: %v. Supported formats: 'in Xm/Xh/Xd'", err))
-		return
-	}
-
-	// 3. Create Reminder struct
-	reminderTime = reminderTime.In(reminderLocation)
-	var nextReminderTime time.Time
-	if isRecurring {
-		nextReminderTime = reminderTime
-	}
-	reminder := &pb.Reminder{
-		UserID:           getUserID(i),
-		TargetUserIDs:    targetUserIDs,
-		Message:          messageArg,
-		ChannelID:        i.ChannelID,
-		GuildID:          i.GuildID, // Will be empty for DMs, which is fine
-		ReminderTime:     reminderTime,
-		IsRecurring:      isRecurring,
-		RecurrenceRule:   recurrenceRule,
-		NextReminderTime: nextReminderTime,
-	}
-
-	log.Infof("handleAddReminder: about to save reminder with targetUserIDs: %v", targetUserIDs)
-
-	// 4. Save to PocketBase
-	err = pb.CreateReminder(reminder)
-	if err != nil {
-		log.Errorf("Failed to create reminder: %v", err)
-		respondWithMessage(s, i, "Sorry, I couldn't save your reminder. Please try again later.")
-		return
-	}
-
-	// 5. Confirm to user
-	var targetUsersString []string
-	for _, uid := range targetUserIDs {
-		targetUsersString = append(targetUsersString, fmt.Sprintf("<@%s>", uid))
-	}
-
-	// Use a custom time format and explicitly mention the time zone
-	timeFormat := "Jan 2, 2006 at 15:04 (Europe/Zagreb)"
-	confirmationMsg := fmt.Sprintf("Okay, I'll remind %s on %s about: \"%s\"",
-		strings.Join(targetUsersString, ", "),
-		reminderTime.Format(timeFormat), // Display in local time for confirmation
-		messageArg)
-	if isRecurring {
-		confirmationMsg += fmt.Sprintf(" (recurs %s)", recurrenceRule)
-	}
-
-	respondWithMessage(s, i, confirmationMsg)
-}
-
-// parseWhenSimple is a basic parser for "in Xm/h/d" and "every Xm/h/d" type strings.
-// Returns: reminderTime, isRecurring, recurrenceRule, error
-func parseWhenSimple(whenStr string) (time.Time, bool, string, error) {
-	whenStr = strings.ToLower(strings.TrimSpace(whenStr))
-	now := time.Now().UTC().In(reminderLocation)
-	isRecurring := false
-	recurrenceRule := ""
-
-	// Check for "every" keyword for recurrence
-	if strings.HasPrefix(whenStr, "every ") {
-		isRecurring = true
-		whenStr = strings.TrimPrefix(whenStr, "every ")
-		// For simple "every Xunit", the rule is just the unit for now.
-		// More complex parsing will set a better rule.
-	}
-
-	// Regex for "in Xunit" or "Xunit"
-	// Example: "in 10m", "10m", "in 2h", "2h", "in 3d", "3d"
-	re := regexp.MustCompile(`^(?:in\s+)?(\d+)\s*([mhd])$`)
-	matches := re.FindStringSubmatch(whenStr)
-
-	if len(matches) == 3 {
-		value, err := strconv.Atoi(matches[1])
-		if err != nil {
-			return time.Time{}, false, "", fmt.Errorf("invalid number: %s", matches[1])
-		}
-		unit := matches[2]
-		duration := time.Duration(value)
-
-		switch unit {
-		case "m":
-			duration *= time.Minute
-			if isRecurring {
-				recurrenceRule = fmt.Sprintf("every %d minutes", value)
-			}
-		case "h":
-			duration *= time.Hour
-			if isRecurring {
-				recurrenceRule = fmt.Sprintf("every %d hours", value)
-			}
-		case "d":
-			duration *= time.Hour * 24
-			if isRecurring {
-				recurrenceRule = fmt.Sprintf("every %d days", value)
-			}
-		default:
-			return time.Time{}, false, "", fmt.Errorf("unknown time unit: %s", unit)
+		response := " \n"
+		response += " **Ava Dungeon Raid Event Created!** \n"
+		response += "**Title**: " + title + "\n"
+		response += "**Date**: " + date + "\n"
+		response += "**Time**: " + time + "\n"
+		if note != "" {
+			response += "**Note**: " + note
 		}
 
-		if isRecurring && recurrenceRule == "" { // Should be set by above cases
-			return time.Time{}, false, "", fmt.Errorf("could not determine recurrence rule for: %s", whenStr)
-		}
-
-		return now.Add(duration), isRecurring, recurrenceRule, nil
-	}
-
-	// Enhanced parsing for more natural time formats
-	// Handle "tomorrow at Xam/pm" format
-	if strings.HasPrefix(whenStr, "tomorrow at ") {
-		timePart := strings.TrimPrefix(whenStr, "tomorrow at ")
-		parsedTime, err := parseTimeOfDay(timePart)
-		if err != nil {
-			return time.Time{}, false, "", fmt.Errorf("invalid time format in 'tomorrow at %s': %v", timePart, err)
-		}
-
-		tomorrow := now.AddDate(0, 0, 1)
-		result := time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(),
-			parsedTime.Hour(), parsedTime.Minute(), 0, 0, now.Location())
-
-		return result, isRecurring, recurrenceRule, nil
-	}
-
-	// Handle "tomorrow Xam/pm" format (without 'at')
-	if strings.HasPrefix(whenStr, "tomorrow ") {
-		timePart := strings.TrimPrefix(whenStr, "tomorrow ")
-		parsedTime, err := parseTimeOfDay(timePart)
-		if err != nil {
-			return time.Time{}, false, "", fmt.Errorf("invalid time format in 'tomorrow %s': %v", timePart, err)
-		}
-
-		tomorrow := now.AddDate(0, 0, 1)
-		result := time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(),
-			parsedTime.Hour(), parsedTime.Minute(), 0, 0, now.Location())
-
-		return result, isRecurring, recurrenceRule, nil
-	}
-
-	// Handle "today at Xam/pm" or "today at X" format
-	if strings.HasPrefix(whenStr, "today at ") {
-		timePart := strings.TrimPrefix(whenStr, "today at ")
-		parsedTime, err := parseTimeOfDay(timePart)
-		if err != nil {
-			return time.Time{}, false, "", fmt.Errorf("invalid time format in 'today at %s': %v", timePart, err)
-		}
-
-		target := time.Date(now.Year(), now.Month(), now.Day(),
-			parsedTime.Hour(), parsedTime.Minute(), 0, 0, now.Location())
-		if target.Before(now) {
-			target = target.AddDate(0, 0, 1) // Move to tomorrow if time has passed today
-		}
-		return target, isRecurring, recurrenceRule, nil
-	}
-
-	// Handle "today Xam/pm" or "today X" format (without 'at')
-	if strings.HasPrefix(whenStr, "today ") {
-		timePart := strings.TrimPrefix(whenStr, "today ")
-		parsedTime, err := parseTimeOfDay(timePart)
-		if err != nil {
-			return time.Time{}, false, "", fmt.Errorf("invalid time format in 'today %s': %v", timePart, err)
-		}
-
-		target := time.Date(now.Year(), now.Month(), now.Day(),
-			parsedTime.Hour(), parsedTime.Minute(), 0, 0, now.Location())
-		if target.Before(now) {
-			target = target.AddDate(0, 0, 1) // Move to tomorrow if time has passed today
-		}
-		return target, isRecurring, recurrenceRule, nil
-	}
-
-	// Handle "next [day] at Xam/pm" format
-	if strings.HasPrefix(whenStr, "next ") && strings.Contains(whenStr, " at ") {
-		parts := strings.SplitN(whenStr, " at ", 2)
-		if len(parts) != 2 {
-			return time.Time{}, false, "", fmt.Errorf("invalid format for 'next [day] at [time]': %s", whenStr)
-		}
-
-		dayPart := strings.TrimPrefix(parts[0], "next ")
-		timePart := parts[1]
-
-		parsedTime, err := parseTimeOfDay(timePart)
-		if err != nil {
-			return time.Time{}, false, "", fmt.Errorf("invalid time format: %v", err)
-		}
-
-		nextDay, err := parseNextDay(dayPart)
-		if err != nil {
-			return time.Time{}, false, "", fmt.Errorf("invalid day format: %v", err)
-		}
-
-		result := time.Date(nextDay.Year(), nextDay.Month(), nextDay.Day(),
-			parsedTime.Hour(), parsedTime.Minute(), 0, 0, now.Location())
-
-		return result, isRecurring, recurrenceRule, nil
-	}
-
-	// Handle "next [day] Xam/pm" format (without 'at')
-	if strings.HasPrefix(whenStr, "next ") {
-		parts := strings.SplitN(whenStr, " ", 3)
-		if len(parts) == 3 {
-			dayPart := parts[1]
-			timePart := parts[2]
-			parsedTime, err := parseTimeOfDay(timePart)
-			if err != nil {
-				return time.Time{}, false, "", fmt.Errorf("invalid time format: %v", err)
-			}
-			nextDay, err := parseNextDay(dayPart)
-			if err != nil {
-				return time.Time{}, false, "", fmt.Errorf("invalid day format: %v", err)
-			}
-			result := time.Date(nextDay.Year(), nextDay.Month(), nextDay.Day(),
-				parsedTime.Hour(), parsedTime.Minute(), 0, 0, now.Location())
-			return result, isRecurring, recurrenceRule, nil
-		}
-	}
-
-	// Handle "every day at Xam/pm" format
-	if strings.HasPrefix(whenStr, "day at ") {
-		timePart := strings.TrimPrefix(whenStr, "day at ")
-		parsedTime, err := parseTimeOfDay(timePart)
-		if err != nil {
-			return time.Time{}, false, "", fmt.Errorf("invalid time format in 'every day at %s': %v", timePart, err)
-		}
-
-		// Calculate next occurrence of this time today or tomorrow
-		today := time.Date(now.Year(), now.Month(), now.Day(),
-			parsedTime.Hour(), parsedTime.Minute(), 0, 0, now.Location())
-
-		if today.Before(now) {
-			today = today.AddDate(0, 0, 1) // Move to tomorrow if time has passed today
-		}
-
-		recurrenceRule = "every day"
-		return today, true, recurrenceRule, nil
-	}
-
-	// Handle "every [weekday] at Xam/pm" format
-	if strings.Contains(whenStr, " at ") {
-		parts := strings.SplitN(whenStr, " at ", 2)
-		if len(parts) == 2 {
-			dayPart := parts[0]
-			timePart := parts[1]
-
-			parsedTime, err := parseTimeOfDay(timePart)
-			if err != nil {
-				return time.Time{}, false, "", fmt.Errorf("invalid time format: %v", err)
-			}
-
-			nextDay, err := parseNextDay(dayPart)
-			if err != nil {
-				return time.Time{}, false, "", fmt.Errorf("invalid day format: %v", err)
-			}
-
-			result := time.Date(nextDay.Year(), nextDay.Month(), nextDay.Day(),
-				parsedTime.Hour(), parsedTime.Minute(), 0, 0, now.Location())
-
-			recurrenceRule = fmt.Sprintf("every %s", dayPart)
-			return result, true, recurrenceRule, nil
-		}
-	}
-	// Support 'every [weekday] [time]' (e.g., 'every sunday 8pm')
-	weekdayList := []string{"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
-		"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
-	for _, wd := range weekdayList {
-		if strings.HasPrefix(whenStr, wd+" ") {
-			timePart := strings.TrimPrefix(whenStr, wd+" ")
-			parsedTime, err := parseTimeOfDay(timePart)
-			if err != nil {
-				return time.Time{}, false, "", fmt.Errorf("invalid time format: %v", err)
-			}
-			nextDay, err := parseNextDay(wd)
-			if err != nil {
-				return time.Time{}, false, "", fmt.Errorf("invalid day format: %v", err)
-			}
-			result := time.Date(nextDay.Year(), nextDay.Month(), nextDay.Day(),
-				parsedTime.Hour(), parsedTime.Minute(), 0, 0, now.Location())
-			recurrenceRule = fmt.Sprintf("every %s", wd)
-			return result, true, recurrenceRule, nil
-		}
-	}
-
-	// Handle "at Xam/pm" or "at X" format (treat as today at X)
-	if strings.HasPrefix(whenStr, "at ") {
-		timePart := strings.TrimPrefix(whenStr, "at ")
-		parsedTime, err := parseTimeOfDay(timePart)
-		if err != nil {
-			return time.Time{}, false, "", fmt.Errorf("invalid time format in 'at %s': %v", timePart, err)
-		}
-
-		target := time.Date(now.Year(), now.Month(), now.Day(),
-			parsedTime.Hour(), parsedTime.Minute(), 0, 0, now.Location())
-		if target.Before(now) {
-			target = target.AddDate(0, 0, 1) // Move to tomorrow if time has passed today
-		}
-		return target, isRecurring, recurrenceRule, nil
-	}
-
-	// Handle just a time string (e.g., "8pm", "20:00")
-	if t, err := parseTimeOfDay(whenStr); err == nil {
-		target := time.Date(now.Year(), now.Month(), now.Day(),
-			t.Hour(), t.Minute(), 0, 0, now.Location())
-		if target.Before(now) {
-			target = target.AddDate(0, 0, 1)
-		}
-		return target, isRecurring, recurrenceRule, nil
-	}
-
-	// For now, only "in Xm/h/d" is supported for non-recurring.
-	// And "every Xm/h/d" for recurring.
-	if isRecurring {
-		return time.Time{}, false, "", fmt.Errorf("unsupported recurring format: '%s'. Try 'every Xm/Xh/Xd', 'every day at Xam/pm', or 'every monday 8pm'. Tip: You can also use 'every day at 8am', 'every monday 8pm', etc.", whenStr)
-	}
-	return time.Time{}, false, "", fmt.Errorf("unsupported time format: '%s'. Try 'in Xm/Xh/Xd', 'tomorrow at Xam/pm', 'next [day] at Xam/pm', 'today at 8pm', 'at 8pm', or just '8pm'. Tip: If the time has already passed today, the reminder will be set for tomorrow.", whenStr)
-}
-
-// parseTimeOfDay parses time strings like "10am", "3:30pm", "14:30"
-func parseTimeOfDay(timeStr string) (time.Time, error) {
-	timeStr = strings.ToLower(strings.TrimSpace(timeStr))
-
-	// Handle 12-hour format with am/pm
-	if strings.Contains(timeStr, "am") || strings.Contains(timeStr, "pm") {
-		// Check if it's pm before removing it
-		isPM := strings.Contains(timeStr, "pm")
-
-		// Remove am/pm and parse
-		timeStr = strings.ReplaceAll(timeStr, "am", "")
-		timeStr = strings.ReplaceAll(timeStr, "pm", "")
-		timeStr = strings.TrimSpace(timeStr)
-
-		// Parse the time
-		var hour, minute int
-		if strings.Contains(timeStr, ":") {
-			parts := strings.Split(timeStr, ":")
-			if len(parts) != 2 {
-				return time.Time{}, fmt.Errorf("invalid time format: %s", timeStr)
-			}
-			var err error
-			hour, err = strconv.Atoi(parts[0])
-			if err != nil {
-				return time.Time{}, fmt.Errorf("invalid hour: %s", parts[0])
-			}
-			minute, err = strconv.Atoi(parts[1])
-			if err != nil {
-				return time.Time{}, fmt.Errorf("invalid minute: %s", parts[1])
-			}
-		} else {
-			var err error
-			hour, err = strconv.Atoi(timeStr)
-			if err != nil {
-				return time.Time{}, fmt.Errorf("invalid hour: %s", timeStr)
-			}
-			minute = 0
-		}
-
-		// Handle 12-hour format
-		if isPM && hour != 12 {
-			hour += 12
-		} else if !isPM && hour == 12 {
-			hour = 0
-		}
-
-		if hour < 0 || hour > 23 || minute < 0 || minute > 59 {
-			return time.Time{}, fmt.Errorf("time out of range: %02d:%02d", hour, minute)
-		}
-
-		return time.Date(2000, 1, 1, hour, minute, 0, 0, reminderLocation), nil
-	}
-
-	// Handle 24-hour format
-	if strings.Contains(timeStr, ":") {
-		parts := strings.Split(timeStr, ":")
-		if len(parts) != 2 {
-			return time.Time{}, fmt.Errorf("invalid time format: %s", timeStr)
-		}
-
-		hour, err := strconv.Atoi(parts[0])
-		if err != nil {
-			return time.Time{}, fmt.Errorf("invalid hour: %s", parts[0])
-		}
-		minute, err := strconv.Atoi(parts[1])
-		if err != nil {
-			return time.Time{}, fmt.Errorf("invalid minute: %s", parts[1])
-		}
-
-		if hour < 0 || hour > 23 || minute < 0 || minute > 59 {
-			return time.Time{}, fmt.Errorf("time out of range: %02d:%02d", hour, minute)
-		}
-
-		return time.Date(2000, 1, 1, hour, minute, 0, 0, reminderLocation), nil
-	}
-
-	return time.Time{}, fmt.Errorf("unsupported time format: %s", timeStr)
-}
-
-// parseNextDay parses day strings like "monday", "tuesday", etc.
-func parseNextDay(dayStr string) (time.Time, error) {
-	dayStr = strings.ToLower(strings.TrimSpace(dayStr))
-
-	dayMap := map[string]time.Weekday{
-		"monday":    time.Monday,
-		"mon":       time.Monday,
-		"tuesday":   time.Tuesday,
-		"tue":       time.Tuesday,
-		"wednesday": time.Wednesday,
-		"wed":       time.Wednesday,
-		"thursday":  time.Thursday,
-		"thu":       time.Thursday,
-		"friday":    time.Friday,
-		"fri":       time.Friday,
-		"saturday":  time.Saturday,
-		"sat":       time.Saturday,
-		"sunday":    time.Sunday,
-		"sun":       time.Sunday,
-	}
-
-	targetDay, exists := dayMap[dayStr]
-	if !exists {
-		return time.Time{}, fmt.Errorf("unknown day: %s", dayStr)
-	}
-
-	now := time.Now().UTC().In(reminderLocation)
-	currentDay := now.Weekday()
-
-	// Calculate days until next occurrence
-	daysUntil := int(targetDay - currentDay)
-	if daysUntil <= 0 {
-		daysUntil += 7 // Move to next week
-	}
-
-	return now.AddDate(0, 0, daysUntil), nil
-}
-
-func handleListReminders(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	userID := getUserID(i)
-	reminders, err := pb.ListRemindersByUser(userID)
-	if err != nil {
-		log.Errorf("Failed to list reminders for user %s: %v", userID, err)
-		respondWithMessage(s, i, "Could not fetch your reminders. Please try again later.")
-		return
-	}
-
-	if len(reminders) == 0 {
-		respondWithMessage(s, i, "You have no active reminders.")
-		return
-	}
-
-	timeFormat := "Jan 2, 2006 at 3:04 PM (Europe/Zagreb)"
-	var contentBuilder strings.Builder
-	var components []discordgo.MessageComponent
-	var deleteButtons []discordgo.MessageComponent
-
-	contentBuilder.WriteString("**Your active reminders:**\n\n")
-	for idx, r := range reminders {
-		var nextDue time.Time
-		if r.IsRecurring {
-			nextDue = r.NextReminderTime
-		} else {
-			nextDue = r.ReminderTime
-		}
-
-		var nextDueStr string
-		if !nextDue.IsZero() {
-			nextDueStr = nextDue.In(reminderLocation).Format(timeFormat)
-		} else {
-			nextDueStr = "N/A (Error in time)"
-		}
-
-		var targets []string
-		for _, tUID := range r.TargetUserIDs {
-			targets = append(targets, fmt.Sprintf("<@%s>", tUID))
-		}
-		targetStr := strings.Join(targets, ", ")
-
-		contentBuilder.WriteString(fmt.Sprintf("%d. To: %s\nMessage: %s\nNext Due: %s\n", idx+1, targetStr, r.Message, nextDueStr))
-		if r.IsRecurring {
-			contentBuilder.WriteString(fmt.Sprintf("Recurs: %s\n", r.RecurrenceRule))
-		}
-		contentBuilder.WriteString("\n")
-
-		deleteButtons = append(deleteButtons, &discordgo.Button{
-			Label:    fmt.Sprintf("Delete %d", idx+1),
-			CustomID: fmt.Sprintf("reminder_delete_%s", r.ID),
-			Style:    discordgo.DangerButton,
+		err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: response,
+				Components: []discordgo.MessageComponent{
+					&discordgo.ActionsRow{
+						Components: []discordgo.MessageComponent{
+							&discordgo.Button{
+								Label:    "Coming",
+								CustomID: "rsvp_coming",
+								Style:    discordgo.PrimaryButton,
+							},
+							&discordgo.Button{
+								Label:    "Benched",
+								CustomID: "rsvp_bench",
+								Style:    discordgo.SecondaryButton,
+							},
+							&discordgo.Button{
+								Label:    "Not Coming",
+								CustomID: "rsvp_not_coming",
+								Style:    discordgo.DangerButton,
+							},
+						},
+					},
+				},
+			},
 		})
-	}
-
-	// Group delete buttons into rows of up to 5
-	for i := 0; i < len(deleteButtons); i += 5 {
-		end := i + 5
-		if end > len(deleteButtons) {
-			end = len(deleteButtons)
-		}
-		components = append(components, &discordgo.ActionsRow{
-			Components: deleteButtons[i:end],
-		})
-	}
-
-	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Content:    contentBuilder.String(),
-			Components: components,
-			Flags:      discordgo.MessageFlagsEphemeral, // Only visible to the user
-		},
-	})
-	if err != nil {
-		log.Errorf("Failed to send reminders list with buttons: %v", err)
-	}
-}
-
-// Add a handler for button interactions to delete reminders
-func buttonHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if i.Type == discordgo.InteractionMessageComponent {
-		customID := i.MessageComponentData().CustomID
-		if strings.HasPrefix(customID, "reminder_delete_") {
-			reminderID := strings.TrimPrefix(customID, "reminder_delete_")
-			userID := getUserID(i)
-			reminder, err := pb.GetReminderByID(reminderID)
-			if err != nil {
-				respondWithMessage(s, i, "Could not find the reminder to delete.")
-				return
-			}
-			if reminder.UserID != userID {
-				respondWithMessage(s, i, "You can only delete reminders you created.")
-				return
-			}
-			err = pb.DeleteReminder(reminderID)
-			if err != nil {
-				respondWithMessage(s, i, "Failed to delete the reminder. Please try again.")
-				return
-			}
-			respondWithMessage(s, i, "Reminder deleted successfully.")
+		if err != nil {
+			log.Printf("Error responding to modal submission: %v", err)
 		}
 	}
-}
-
-func handleDeleteReminder(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	deleterUserID := getUserID(i)
-	reminderIDToDelete := i.ApplicationCommandData().Options[0].Options[0].StringValue() // Subcommand "delete" -> option "id"
-
-	if reminderIDToDelete == "" {
-		respondWithMessage(s, i, "You must provide a reminder ID to delete.")
-		return
-	}
-
-	reminder, err := pb.GetReminderByID(reminderIDToDelete)
-	if err != nil {
-		// Check if it's a "not found" error
-		if strings.Contains(err.Error(), "Failed to find record") || strings.Contains(err.Error(), "not found") { // Adjust based on PocketBase error messages
-			log.Warnf("User %s tried to delete non-existent reminder ID %s: %v", deleterUserID, reminderIDToDelete, err)
-			respondWithMessage(s, i, fmt.Sprintf("Could not find a reminder with ID: `%s`.", reminderIDToDelete))
-			return
-		}
-		log.Errorf("Error fetching reminder ID %s for deletion by user %s: %v", reminderIDToDelete, deleterUserID, err)
-		respondWithMessage(s, i, "Could not fetch the reminder for deletion. Please try again.")
-		return
-	}
-
-	// Authorization: Check if the user trying to delete is the one who created it.
-	// TODO: Add admin override if desired (e.g., check for admin role)
-	if reminder.UserID != deleterUserID {
-		log.Warnf("User %s attempted to delete reminder ID %s owned by user %s.", deleterUserID, reminderIDToDelete, reminder.UserID)
-		respondWithMessage(s, i, "You can only delete reminders that you created.")
-		return
-	}
-
-	err = pb.DeleteReminder(reminderIDToDelete)
-	if err != nil {
-		log.Errorf("Failed to delete reminder ID %s for user %s: %v", reminderIDToDelete, deleterUserID, err)
-		respondWithMessage(s, i, fmt.Sprintf("Failed to delete reminder `%s`. Please try again.", reminderIDToDelete))
-		return
-	}
-
-	log.Infof("User %s successfully deleted reminder ID %s.", deleterUserID, reminderIDToDelete)
-	respondWithMessage(s, i, fmt.Sprintf("Successfully deleted reminder with ID: `%s`.", reminderIDToDelete))
 }
 
 // startReminderScheduler periodically checks for and dispatches due reminders.
@@ -1200,39 +584,23 @@ func processDueReminders(s *discordgo.Session) {
 	}
 }
 
-// calculateNextRecurrence calculates the next time for a recurring reminder.
-// This is a simplified version based on parseWhenSimple's output.
-// Enhanced to parse more complex RecurrenceRule (e.g., "every day", "every monday").
 func calculateNextRecurrence(originalReminderTime time.Time, rule string, lastTriggeredTime time.Time) (time.Time, error) {
 	now := time.Now().UTC().In(reminderLocation)
-	// If lastTriggeredTime is zero (first time for a recurring one after initial setup),
-	// or if originalReminderTime is in the future (e.g. reminder set "every day at 9am" but it's 8am now),
-	// the next time *might* still be the originalReminderTime if it hasn't passed.
-	// However, GetDueReminders should only return it if originalReminderTime/NextReminderTime is past.
-	// So, we assume lastTriggeredTime is the correct base if available and non-zero.
 
 	baseTime := lastTriggeredTime
-	if baseTime.IsZero() { // If it was never triggered (e.g. just created recurring)
-		baseTime = originalReminderTime // This was the first scheduled time.
+	if baseTime.IsZero() {
+		baseTime = originalReminderTime
 	}
-
-	// Ensure baseTime is not in the future relative to now, as we're calculating the *next* one from *now* or *last trigger*.
-	// If the calculated baseTime (original or last triggered) is somehow ahead of 'now',
-	// and it was picked by GetDueReminders, it means 'now' just passed it.
-	// So, the next occurrence should be calculated from this 'baseTime'.
 
 	rule = strings.ToLower(strings.TrimSpace(rule))
 
-	// Handle "every day" format
 	if rule == "every day" {
-		// Extract the time from the original reminder time
+
 		hour := originalReminderTime.Hour()
 		minute := originalReminderTime.Minute()
 
-		// Calculate next occurrence
 		next := time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, now.Location())
 
-		// If the time has already passed today, move to tomorrow
 		if !next.After(now) {
 			next = next.AddDate(0, 0, 1)
 		}
@@ -1240,7 +608,6 @@ func calculateNextRecurrence(originalReminderTime time.Time, rule string, lastTr
 		return next, nil
 	}
 
-	// Handle "every [weekday]" format
 	if strings.HasPrefix(rule, "every ") {
 		dayPart := strings.TrimPrefix(rule, "every ")
 		dayMap := map[string]time.Weekday{
@@ -1262,11 +629,10 @@ func calculateNextRecurrence(originalReminderTime time.Time, rule string, lastTr
 
 		targetDay, exists := dayMap[dayPart]
 		if exists {
-			// Extract the time from the original reminder time
+
 			hour := originalReminderTime.Hour()
 			minute := originalReminderTime.Minute()
 
-			// Calculate next occurrence of this weekday
 			currentDay := now.Weekday()
 			daysUntil := int(targetDay - currentDay)
 			if daysUntil <= 0 {
@@ -1280,14 +646,13 @@ func calculateNextRecurrence(originalReminderTime time.Time, rule string, lastTr
 		}
 	}
 
-	// Simple rules from parseWhenSimple: "every X minutes/hours/days"
 	re := regexp.MustCompile(`^every (\d+) (minutes|hours|days)$`)
 	matches := re.FindStringSubmatch(rule)
 
 	if len(matches) == 3 {
 		value, err := strconv.Atoi(matches[1])
 		if err != nil {
-			// This should ideally not happen due to the regex \d+
+
 			return time.Time{}, fmt.Errorf("internal error parsing number from rule '%s': %v", rule, err)
 		}
 		unit := matches[2]
@@ -1305,9 +670,7 @@ func calculateNextRecurrence(originalReminderTime time.Time, rule string, lastTr
 		}
 
 		next := baseTime.Add(durationToAdd)
-		// Ensure the next calculated time is in the future from 'now'.
-		// If baseTime.Add(duration) is still in the past (e.g. bot was offline for a long time),
-		// keep adding the duration until it's in the future.
+
 		for !next.After(now) {
 			next = next.Add(durationToAdd)
 		}
@@ -1345,53 +708,37 @@ func respondWithMessage(s *discordgo.Session, i *discordgo.InteractionCreate, me
 	})
 }
 
-func modalHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if i.Type == discordgo.InteractionModalSubmit && i.ModalSubmitData().CustomID == "event_modal" {
-		data := i.ModalSubmitData()
-
-		title := data.Components[0].(*discordgo.ActionsRow).Components[0].(*discordgo.TextInput).Value
-		date := data.Components[1].(*discordgo.ActionsRow).Components[0].(*discordgo.TextInput).Value
-		time := data.Components[2].(*discordgo.ActionsRow).Components[0].(*discordgo.TextInput).Value
-		note := data.Components[3].(*discordgo.ActionsRow).Components[0].(*discordgo.TextInput).Value
-
-		response := " \n"
-		response += " **Ava Dungeon Raid Event Created!** \n"
-		response += "**Title**: " + title + "\n"
-		response += "**Date**: " + date + "\n"
-		response += "**Time**: " + time + "\n"
-		if note != "" {
-			response += "**Note**: " + note
-		}
-
-		err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{
-				Content: response,
-				Components: []discordgo.MessageComponent{
-					&discordgo.ActionsRow{
-						Components: []discordgo.MessageComponent{
-							&discordgo.Button{
-								Label:    "Coming",
-								CustomID: "rsvp_coming",
-								Style:    discordgo.PrimaryButton,
-							},
-							&discordgo.Button{
-								Label:    "Benched",
-								CustomID: "rsvp_bench",
-								Style:    discordgo.SecondaryButton,
-							},
-							&discordgo.Button{
-								Label:    "Not Coming",
-								CustomID: "rsvp_not_coming",
-								Style:    discordgo.DangerButton,
-							},
-						},
-					},
-				},
-			},
-		})
-		if err != nil {
-			log.Printf("Error responding to modal submission: %v", err)
+func buttonHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if i.Type == discordgo.InteractionMessageComponent {
+		customID := i.MessageComponentData().CustomID
+		if strings.HasPrefix(customID, "reminder_delete_") {
+			reminderID := strings.TrimPrefix(customID, "reminder_delete_")
+			userID := getUserID(i)
+			reminder, err := pb.GetReminderByID(reminderID)
+			if err != nil {
+				respondWithMessage(s, i, "Could not find the reminder to delete.")
+				return
+			}
+			if reminder.UserID != userID {
+				respondWithMessage(s, i, "You can only delete reminders you created.")
+				return
+			}
+			err = pb.DeleteReminder(reminderID)
+			if err != nil {
+				respondWithMessage(s, i, "Failed to delete the reminder. Please try again.")
+				return
+			}
+			respondWithMessage(s, i, "Reminder deleted successfully.")
 		}
 	}
+}
+
+func getUserID(i *discordgo.InteractionCreate) string {
+	if i.Member != nil && i.Member.User != nil {
+		return i.Member.User.ID
+	}
+	if i.User != nil {
+		return i.User.ID
+	}
+	return ""
 }
