@@ -465,6 +465,17 @@ func handleRemindCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 }
 
+// Helper to get user ID from InteractionCreate (works for DMs and guilds)
+func getUserID(i *discordgo.InteractionCreate) string {
+	if i.Member != nil && i.Member.User != nil {
+		return i.Member.User.ID
+	}
+	if i.User != nil {
+		return i.User.ID
+	}
+	return ""
+}
+
 // handleAddReminder processes the /remind add command.
 func handleAddReminder(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	options := i.ApplicationCommandData().Options[0].Options // Options for the "add" subcommand
@@ -492,7 +503,7 @@ func handleAddReminder(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	for _, idStr := range rawTargetUserIDs {
 		trimmedID := strings.TrimSpace(idStr)
 		if trimmedID == "@me" {
-			targetUserIDs = append(targetUserIDs, i.Member.User.ID)
+			targetUserIDs = append(targetUserIDs, getUserID(i))
 		} else {
 			// Basic validation: check if it's a user mention or a raw ID
 			// <@USER_ID> or <@!USER_ID>
@@ -533,15 +544,15 @@ func handleAddReminder(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 
 	// 3. Create Reminder struct
-	// Ensure reminderTime and NextReminderTime are in Europe/Zagreb
-	reminderTime = reminderTime.In(reminderLocation)
+	// Adjust for manual offset: subtract 2 hours before saving
+	reminderTime = reminderTime.Add(-2 * time.Hour)
 	var nextReminderTime time.Time
 	if isRecurring {
 		nextReminderTime = reminderTime
 	}
 
 	reminder := &pb.Reminder{
-		UserID:           i.Member.User.ID,
+		UserID:           getUserID(i),
 		TargetUserIDs:    targetUserIDs,
 		Message:          messageArg,
 		ChannelID:        i.ChannelID,
@@ -963,7 +974,7 @@ func parseNextDay(dayStr string) (time.Time, error) {
 }
 
 func handleListReminders(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	userID := i.Member.User.ID
+	userID := getUserID(i)
 	reminders, err := pb.ListRemindersByUser(userID)
 	if err != nil {
 		log.Errorf("Failed to list reminders for user %s: %v", userID, err)
@@ -979,6 +990,7 @@ func handleListReminders(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	timeFormat := "Jan 2, 2006 at 3:04 PM (Europe/Zagreb)"
 	var contentBuilder strings.Builder
 	var components []discordgo.MessageComponent
+	var deleteButtons []discordgo.MessageComponent
 
 	contentBuilder.WriteString("**Your active reminders:**\n\n")
 	for idx, r := range reminders {
@@ -991,7 +1003,7 @@ func handleListReminders(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 		var nextDueStr string
 		if !nextDue.IsZero() {
-			nextDueStr = nextDue.In(reminderLocation).Format(timeFormat)
+			nextDueStr = nextDue.Add(2 * time.Hour).In(reminderLocation).Format(timeFormat)
 		} else {
 			nextDueStr = "N/A (Error in time)"
 		}
@@ -1008,15 +1020,21 @@ func handleListReminders(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		}
 		contentBuilder.WriteString("\n")
 
-		// Add a numbered delete button for this reminder immediately after its text
+		deleteButtons = append(deleteButtons, &discordgo.Button{
+			Label:    fmt.Sprintf("Delete %d", idx+1),
+			CustomID: fmt.Sprintf("reminder_delete_%s", r.ID),
+			Style:    discordgo.DangerButton,
+		})
+	}
+
+	// Group delete buttons into rows of up to 5
+	for i := 0; i < len(deleteButtons); i += 5 {
+		end := i + 5
+		if end > len(deleteButtons) {
+			end = len(deleteButtons)
+		}
 		components = append(components, &discordgo.ActionsRow{
-			Components: []discordgo.MessageComponent{
-				&discordgo.Button{
-					Label:    fmt.Sprintf("Delete %d", idx+1),
-					CustomID: fmt.Sprintf("reminder_delete_%s", r.ID),
-					Style:    discordgo.DangerButton,
-				},
-			},
+			Components: deleteButtons[i:end],
 		})
 	}
 
@@ -1039,7 +1057,7 @@ func buttonHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		customID := i.MessageComponentData().CustomID
 		if strings.HasPrefix(customID, "reminder_delete_") {
 			reminderID := strings.TrimPrefix(customID, "reminder_delete_")
-			userID := i.Member.User.ID
+			userID := getUserID(i)
 			reminder, err := pb.GetReminderByID(reminderID)
 			if err != nil {
 				respondWithMessage(s, i, "Could not find the reminder to delete.")
@@ -1060,7 +1078,7 @@ func buttonHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 }
 
 func handleDeleteReminder(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	deleterUserID := i.Member.User.ID
+	deleterUserID := getUserID(i)
 	reminderIDToDelete := i.ApplicationCommandData().Options[0].Options[0].StringValue() // Subcommand "delete" -> option "id"
 
 	if reminderIDToDelete == "" {
@@ -1134,42 +1152,51 @@ func processDueReminders(s *discordgo.Session) {
 		for _, userID := range reminder.TargetUserIDs {
 			mentions = append(mentions, fmt.Sprintf("<@%s>", userID))
 		}
-		fullMessage := fmt.Sprintf("%s Hey! Here's your reminder: %s", strings.Join(mentions, " "), reminder.Message)
-
-		_, err := s.ChannelMessageSend(reminder.ChannelID, fullMessage)
-		if err != nil {
-			log.Errorf("Failed to send reminder message for reminder ID %s to channel %s: %v", reminder.ID, reminder.ChannelID, err)
-			// Decide if we should retry or skip. For now, skip.
-			// If the channel or bot permissions are an issue, retrying might not help.
-			continue
-		}
-		log.Infof("Sent reminder ID %s to channel %s for users %v.", reminder.ID, reminder.ChannelID, reminder.TargetUserIDs)
-
-		if !reminder.IsRecurring {
-			err := pb.DeleteReminder(reminder.ID)
-			if err != nil {
-				log.Errorf("Failed to delete non-recurring reminder ID %s: %v", reminder.ID, err)
-			} else {
-				log.Infof("Deleted non-recurring reminder ID %s.", reminder.ID)
-			}
+		var scheduledTime time.Time
+		if reminder.IsRecurring {
+			scheduledTime = reminder.NextReminderTime
 		} else {
-			// Handle recurring reminder: calculate next time and update
-			nextTime, errCalc := calculateNextRecurrence(reminder.ReminderTime, reminder.RecurrenceRule, reminder.LastTriggeredAt)
-			if errCalc != nil {
-				log.Errorf("Failed to calculate next recurrence for reminder ID %s: %v. Deleting reminder to prevent loop.", reminder.ID, errCalc)
-				// If calculation fails, delete it to avoid it getting stuck.
-				pb.DeleteReminder(reminder.ID)
+			scheduledTime = reminder.ReminderTime
+		}
+		if !scheduledTime.IsZero() {
+			fullMessage := fmt.Sprintf("%s Hey! Here's your reminder: %s", strings.Join(mentions, " "), reminder.Message)
+			fullMessage += fmt.Sprintf(" (Scheduled for: %s)", scheduledTime.Add(2*time.Hour).In(reminderLocation).Format("Jan 2, 2006 at 3:04 PM (Europe/Zagreb)"))
+
+			_, err := s.ChannelMessageSend(reminder.ChannelID, fullMessage)
+			if err != nil {
+				log.Errorf("Failed to send reminder message for reminder ID %s to channel %s: %v", reminder.ID, reminder.ChannelID, err)
+				// Decide if we should retry or skip. For now, skip.
+				// If the channel or bot permissions are an issue, retrying might not help.
 				continue
 			}
+			log.Infof("Sent reminder ID %s to channel %s for users %v.", reminder.ID, reminder.ChannelID, reminder.TargetUserIDs)
 
-			reminder.NextReminderTime = nextTime
-			reminder.LastTriggeredAt = time.Now().In(reminderLocation) // Set last triggered to now
-
-			errUpdate := pb.UpdateReminder(reminder)
-			if errUpdate != nil {
-				log.Errorf("Failed to update recurring reminder ID %s with next time %v: %v", reminder.ID, nextTime, errUpdate)
+			if !reminder.IsRecurring {
+				err := pb.DeleteReminder(reminder.ID)
+				if err != nil {
+					log.Errorf("Failed to delete non-recurring reminder ID %s: %v", reminder.ID, err)
+				} else {
+					log.Infof("Deleted non-recurring reminder ID %s.", reminder.ID)
+				}
 			} else {
-				log.Infof("Updated recurring reminder ID %s. Next occurrence: %s", reminder.ID, nextTime.In(reminderLocation).Format(time.RFC1123))
+				// Handle recurring reminder: calculate next time and update
+				nextTime, errCalc := calculateNextRecurrence(reminder.ReminderTime, reminder.RecurrenceRule, reminder.LastTriggeredAt)
+				if errCalc != nil {
+					log.Errorf("Failed to calculate next recurrence for reminder ID %s: %v. Deleting reminder to prevent loop.", reminder.ID, errCalc)
+					// If calculation fails, delete it to avoid it getting stuck.
+					pb.DeleteReminder(reminder.ID)
+					continue
+				}
+
+				reminder.NextReminderTime = nextTime
+				reminder.LastTriggeredAt = time.Now().In(reminderLocation) // Set last triggered to now
+
+				errUpdate := pb.UpdateReminder(reminder)
+				if errUpdate != nil {
+					log.Errorf("Failed to update recurring reminder ID %s with next time %v: %v", reminder.ID, nextTime, errUpdate)
+				} else {
+					log.Infof("Updated recurring reminder ID %s. Next occurrence: %s", reminder.ID, nextTime.In(reminderLocation).Format(time.RFC1123))
+				}
 			}
 		}
 	}
