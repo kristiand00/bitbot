@@ -544,13 +544,11 @@ func handleAddReminder(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 
 	// 3. Create Reminder struct
-	// Adjust for manual offset: subtract 2 hours before saving
-	reminderTime = reminderTime.Add(-2 * time.Hour)
+	reminderTime = reminderTime.In(reminderLocation)
 	var nextReminderTime time.Time
 	if isRecurring {
 		nextReminderTime = reminderTime
 	}
-
 	reminder := &pb.Reminder{
 		UserID:           getUserID(i),
 		TargetUserIDs:    targetUserIDs,
@@ -583,7 +581,7 @@ func handleAddReminder(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	timeFormat := "Jan 2, 2006 at 15:04 (Europe/Zagreb)"
 	confirmationMsg := fmt.Sprintf("Okay, I'll remind %s on %s about: \"%s\"",
 		strings.Join(targetUsersString, ", "),
-		reminderTime.In(reminderLocation).Format(timeFormat), // Display in local time for confirmation
+		reminderTime.Format(timeFormat), // Display in local time for confirmation
 		messageArg)
 	if isRecurring {
 		confirmationMsg += fmt.Sprintf(" (recurs %s)", recurrenceRule)
@@ -1003,7 +1001,7 @@ func handleListReminders(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 		var nextDueStr string
 		if !nextDue.IsZero() {
-			nextDueStr = nextDue.Add(2 * time.Hour).In(reminderLocation).Format(timeFormat)
+			nextDueStr = nextDue.In(reminderLocation).Format(timeFormat)
 		} else {
 			nextDueStr = "N/A (Error in time)"
 		}
@@ -1160,7 +1158,7 @@ func processDueReminders(s *discordgo.Session) {
 		}
 		if !scheduledTime.IsZero() {
 			fullMessage := fmt.Sprintf("%s Hey! Here's your reminder: %s", strings.Join(mentions, " "), reminder.Message)
-			fullMessage += fmt.Sprintf(" (Scheduled for: %s)", scheduledTime.Add(2*time.Hour).In(reminderLocation).Format("Jan 2, 2006 at 3:04 PM (Europe/Zagreb)"))
+			fullMessage += fmt.Sprintf(" (Scheduled for: %s)", scheduledTime.In(reminderLocation).Format("Jan 2, 2006 at 3:04 PM (Europe/Zagreb)"))
 
 			_, err := s.ChannelMessageSend(reminder.ChannelID, fullMessage)
 			if err != nil {
