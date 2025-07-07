@@ -7,7 +7,6 @@ import (
 	"math/rand"
 	"os" // Restoring os import
 	"os/signal"
-	"regexp"
 	"strconv"
 	"strings" // For RWMutex
 	"time"    // Added for timeout in receiveOpusPackets
@@ -173,7 +172,7 @@ func Run() {
 	}
 	log.Info("Gemini Client initialized successfully.")
 
-	go startReminderScheduler(discord)
+	go StartReminderScheduler(discord)
 
 	log.Info("Initializing PocketBase...")
 	pb.Init()
@@ -514,172 +513,6 @@ func startReminderScheduler(s *discordgo.Session) {
 	}
 }
 
-// processDueReminders fetches and handles due reminders.
-func processDueReminders(s *discordgo.Session) {
-	dueReminders, err := pb.GetDueReminders()
-	if err != nil {
-		log.Errorf("Error fetching due reminders: %v", err)
-		return
-	}
-
-	if len(dueReminders) == 0 {
-		log.Debug("No due reminders found.")
-		return
-	}
-
-	log.Infof("Found %d due reminder(s). Processing...", len(dueReminders))
-
-	for _, reminder := range dueReminders {
-		var mentions []string
-		for _, userID := range reminder.TargetUserIDs {
-			mentions = append(mentions, fmt.Sprintf("<@%s>", userID))
-		}
-		var scheduledTime time.Time
-		if reminder.IsRecurring {
-			scheduledTime = reminder.NextReminderTime
-		} else {
-			scheduledTime = reminder.ReminderTime
-		}
-		if !scheduledTime.IsZero() {
-			fullMessage := fmt.Sprintf("%s Hey! Here's your reminder: %s", strings.Join(mentions, " "), reminder.Message)
-			fullMessage += fmt.Sprintf(" (Scheduled for: %s)", scheduledTime.In(reminderLocation).Format("Jan 2, 2006 at 3:04 PM (Europe/Zagreb)"))
-
-			_, err := s.ChannelMessageSend(reminder.ChannelID, fullMessage)
-			if err != nil {
-				log.Errorf("Failed to send reminder message for reminder ID %s to channel %s: %v", reminder.ID, reminder.ChannelID, err)
-				// Decide if we should retry or skip. For now, skip.
-				// If the channel or bot permissions are an issue, retrying might not help.
-				continue
-			}
-			log.Infof("Sent reminder ID %s to channel %s for users %v.", reminder.ID, reminder.ChannelID, reminder.TargetUserIDs)
-
-			if !reminder.IsRecurring {
-				err := pb.DeleteReminder(reminder.ID)
-				if err != nil {
-					log.Errorf("Failed to delete non-recurring reminder ID %s: %v", reminder.ID, err)
-				} else {
-					log.Infof("Deleted non-recurring reminder ID %s.", reminder.ID)
-				}
-			} else {
-				// Handle recurring reminder: calculate next time and update
-				nextTime, errCalc := calculateNextRecurrence(reminder.ReminderTime, reminder.RecurrenceRule, reminder.LastTriggeredAt)
-				if errCalc != nil {
-					log.Errorf("Failed to calculate next recurrence for reminder ID %s: %v. Deleting reminder to prevent loop.", reminder.ID, errCalc)
-					// If calculation fails, delete it to avoid it getting stuck.
-					pb.DeleteReminder(reminder.ID)
-					continue
-				}
-
-				reminder.NextReminderTime = nextTime
-				reminder.LastTriggeredAt = time.Now().UTC().In(reminderLocation) // Set last triggered to now
-
-				errUpdate := pb.UpdateReminder(reminder)
-				if errUpdate != nil {
-					log.Errorf("Failed to update recurring reminder ID %s with next time %v: %v", reminder.ID, nextTime, errUpdate)
-				} else {
-					log.Infof("Updated recurring reminder ID %s. Next occurrence: %s", reminder.ID, nextTime.In(reminderLocation).Format(time.RFC1123))
-				}
-			}
-		}
-	}
-}
-
-func calculateNextRecurrence(originalReminderTime time.Time, rule string, lastTriggeredTime time.Time) (time.Time, error) {
-	now := time.Now().UTC().In(reminderLocation)
-
-	baseTime := lastTriggeredTime
-	if baseTime.IsZero() {
-		baseTime = originalReminderTime
-	}
-
-	rule = strings.ToLower(strings.TrimSpace(rule))
-
-	if rule == "every day" {
-
-		hour := originalReminderTime.Hour()
-		minute := originalReminderTime.Minute()
-
-		next := time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, now.Location())
-
-		if !next.After(now) {
-			next = next.AddDate(0, 0, 1)
-		}
-
-		return next, nil
-	}
-
-	if strings.HasPrefix(rule, "every ") {
-		dayPart := strings.TrimPrefix(rule, "every ")
-		dayMap := map[string]time.Weekday{
-			"monday":    time.Monday,
-			"mon":       time.Monday,
-			"tuesday":   time.Tuesday,
-			"tue":       time.Tuesday,
-			"wednesday": time.Wednesday,
-			"wed":       time.Wednesday,
-			"thursday":  time.Thursday,
-			"thu":       time.Thursday,
-			"friday":    time.Friday,
-			"fri":       time.Friday,
-			"saturday":  time.Saturday,
-			"sat":       time.Saturday,
-			"sunday":    time.Sunday,
-			"sun":       time.Sunday,
-		}
-
-		targetDay, exists := dayMap[dayPart]
-		if exists {
-
-			hour := originalReminderTime.Hour()
-			minute := originalReminderTime.Minute()
-
-			currentDay := now.Weekday()
-			daysUntil := int(targetDay - currentDay)
-			if daysUntil <= 0 {
-				daysUntil += 7 // Move to next week
-			}
-
-			next := time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, now.Location())
-			next = next.AddDate(0, 0, daysUntil)
-
-			return next, nil
-		}
-	}
-
-	re := regexp.MustCompile(`^every (\d+) (minutes|hours|days)$`)
-	matches := re.FindStringSubmatch(rule)
-
-	if len(matches) == 3 {
-		value, err := strconv.Atoi(matches[1])
-		if err != nil {
-
-			return time.Time{}, fmt.Errorf("internal error parsing number from rule '%s': %v", rule, err)
-		}
-		unit := matches[2]
-		var durationToAdd time.Duration
-
-		switch unit {
-		case "minutes":
-			durationToAdd = time.Duration(value) * time.Minute
-		case "hours":
-			durationToAdd = time.Duration(value) * time.Hour
-		case "days":
-			durationToAdd = time.Duration(value) * time.Hour * 24
-		default:
-			return time.Time{}, fmt.Errorf("unknown unit in recurrence rule: %s", unit)
-		}
-
-		next := baseTime.Add(durationToAdd)
-
-		for !next.After(now) {
-			next = next.Add(durationToAdd)
-		}
-		return next, nil
-	}
-
-	return time.Time{}, fmt.Errorf("unsupported recurrence rule for auto-calculation: '%s'", rule)
-}
-
 func respondWithMessage(s *discordgo.Session, i *discordgo.InteractionCreate, message interface{}) {
 	var response *discordgo.InteractionResponseData
 
@@ -709,36 +542,5 @@ func respondWithMessage(s *discordgo.Session, i *discordgo.InteractionCreate, me
 }
 
 func buttonHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if i.Type == discordgo.InteractionMessageComponent {
-		customID := i.MessageComponentData().CustomID
-		if strings.HasPrefix(customID, "reminder_delete_") {
-			reminderID := strings.TrimPrefix(customID, "reminder_delete_")
-			userID := getUserID(i)
-			reminder, err := pb.GetReminderByID(reminderID)
-			if err != nil {
-				respondWithMessage(s, i, "Could not find the reminder to delete.")
-				return
-			}
-			if reminder.UserID != userID {
-				respondWithMessage(s, i, "You can only delete reminders you created.")
-				return
-			}
-			err = pb.DeleteReminder(reminderID)
-			if err != nil {
-				respondWithMessage(s, i, "Failed to delete the reminder. Please try again.")
-				return
-			}
-			respondWithMessage(s, i, "Reminder deleted successfully.")
-		}
-	}
-}
-
-func getUserID(i *discordgo.InteractionCreate) string {
-	if i.Member != nil && i.Member.User != nil {
-		return i.Member.User.ID
-	}
-	if i.User != nil {
-		return i.User.ID
-	}
-	return ""
+	ButtonHandler(s, i)
 }
