@@ -249,7 +249,7 @@ func handleDeleteReminder(s *discordgo.Session, i *discordgo.InteractionCreate) 
 // parseWhenSimple is a basic parser for "in Xm/h/d" and other supported formats.
 func parseWhenSimple(whenStr string) (time.Time, bool, string, error) {
 	whenStr = strings.ToLower(strings.TrimSpace(whenStr))
-	now := time.Now().UTC().In(reminderLocation)
+	now := time.Now().In(reminderLocation)
 	isRecurring := false
 	recurrenceRule := ""
 
@@ -394,7 +394,7 @@ func parseNextDay(dayStr string) (time.Time, error) {
 	if !exists {
 		return time.Time{}, fmt.Errorf("unknown day: %s", dayStr)
 	}
-	now := time.Now().UTC().In(reminderLocation)
+	now := time.Now().In(reminderLocation)
 	currentDay := now.Weekday()
 	daysUntil := int(targetDay - currentDay)
 	if daysUntil <= 0 {
@@ -461,7 +461,7 @@ func processDueReminders(s *discordgo.Session) {
 					continue
 				}
 				reminder.NextReminderTime = nextTime
-				reminder.LastTriggeredAt = time.Now().UTC().In(reminderLocation)
+				reminder.LastTriggeredAt = time.Now().In(reminderLocation)
 				errUpdate := pb.UpdateReminder(reminder)
 				if errUpdate != nil {
 					log.Errorf("Failed to update recurring reminder ID %s with next time %v: %v", reminder.ID, nextTime, errUpdate)
@@ -475,7 +475,7 @@ func processDueReminders(s *discordgo.Session) {
 
 // CalculateNextRecurrence calculates the next time for a recurring reminder.
 func CalculateNextRecurrence(originalReminderTime time.Time, rule string, lastTriggeredTime time.Time) (time.Time, error) {
-	now := time.Now().UTC().In(reminderLocation)
+	now := time.Now().In(reminderLocation)
 	baseTime := lastTriggeredTime
 	if baseTime.IsZero() {
 		baseTime = originalReminderTime
