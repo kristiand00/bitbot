@@ -23,6 +23,16 @@ var (
 	pbApp   *pocketbase.PocketBase // Renamed from 'app' to avoid conflict if any package level 'app' existed
 )
 
+var reminderLocation *time.Location
+
+func init() {
+	var err error
+	reminderLocation, err = time.LoadLocation("Europe/Zagreb")
+	if err != nil {
+		reminderLocation = time.UTC
+	}
+}
+
 type ServerInfo struct {
 	UserID            string
 	GuildID           string
@@ -530,21 +540,21 @@ func recordToReminder(record *core.Record) *Reminder {
 
 	reminderTimeStr := record.GetString("reminder_time")
 	if t, err := time.Parse(time.RFC3339Nano, reminderTimeStr); err == nil {
-		r.ReminderTime = t
+		r.ReminderTime = t.In(reminderLocation)
 	} else {
 		log.Warn("Failed to parse reminder_time", "value", reminderTimeStr, "error", err)
 	}
 
 	nextReminderTimeStr := record.GetString("next_reminder_time")
 	if t, err := time.Parse(time.RFC3339Nano, nextReminderTimeStr); err == nil && !t.IsZero() {
-		r.NextReminderTime = t
+		r.NextReminderTime = t.In(reminderLocation)
 	} else if err != nil && nextReminderTimeStr != "" { // Only log if there was a value but parsing failed
 		log.Warn("Failed to parse next_reminder_time", "value", nextReminderTimeStr, "error", err)
 	}
 
 	lastTriggeredAtStr := record.GetString("last_triggered_at")
 	if t, err := time.Parse(time.RFC3339Nano, lastTriggeredAtStr); err == nil && !t.IsZero() {
-		r.LastTriggeredAt = t
+		r.LastTriggeredAt = t.In(reminderLocation)
 	} else if err != nil && lastTriggeredAtStr != "" { // Only log if there was a value but parsing failed
 		log.Warn("Failed to parse last_triggered_at", "value", lastTriggeredAtStr, "error", err)
 	}
