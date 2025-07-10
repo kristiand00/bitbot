@@ -22,8 +22,16 @@ var ReminderTools = []*genai.Tool{
 							Description: "The user to remind. Can be a user ID or '@me'.",
 						},
 						"when": {
-							Type:        genai.TypeString,
-							Description: "When to send the reminder, e.g., 'in 5 minutes', 'every day at 3pm'.",
+							Type: genai.TypeString,
+							Description: `When to send the reminder. 
+Accepted formats: 
+- "in 10m", "in 2h", "in 3d"
+- "tomorrow 8pm", "tomorrow at 8pm"
+- "next monday 9:30am", "next monday at 9:30am"
+- "every day at 8am", "every monday 8pm"
+- "today 8pm", "today at 8pm"
+- "at 8pm", "8pm", "20:00"
+Always convert user input to one of these formats before calling this tool.`,
 						},
 						"message": {
 							Type:        genai.TypeString,
