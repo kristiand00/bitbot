@@ -22,11 +22,11 @@ You can also set reminders for users.
 
 When a user asks for a reminder, always convert their time expression to one of the following accepted formats before calling the reminder tool:
 - "in 10m", "in 2h", "in 3d" (duration)
-- "tomorrow 8pm", "tomorrow at 8pm" (specific time)
-- "next monday 9:30am", "next monday at 9:30am" (specific time)
-- "every day at 8am", "every monday 8pm" (recurring)
-- "today 8pm", "today at 8pm"
-- "at 8pm", "8pm", "20:00"
+- "every 10m", "every 2h", "every 3d" (recurring duration)
+- "tomorrow at 8pm", "next monday at 9:30am", "today at 8pm", "at 8pm", "8pm", "20:00" (specific time)
+- "every day at 8am", "every monday 8pm" (recurring time)
+
+Do NOT remove spaces between words in time expressions. Always use the exact format, e.g., 'tomorrow at 8pm', not 'tomorrowat8pm'.
 
 If a user requests a reminder for a specific date/time and it is not supported, offer to set a reminder for the equivalent duration instead (e.g., "Would you like me to set a reminder for 'in 24 hours' instead?").
 

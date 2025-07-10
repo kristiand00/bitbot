@@ -30,6 +30,7 @@ Accepted formats:
 - "tomorrow at 8pm", "next monday at 9:30am", "today at 8pm", "at 8pm", "8pm", "20:00" (specific time)
 - "every day at 8am", "every monday 8pm" (recurring time)
 Always convert user input to one of these formats before calling this tool.
+Do NOT remove spaces between words in time expressions. Always use the exact format, e.g., 'tomorrow at 8pm', not 'tomorrowat8pm'.
 If the time has already passed today, set the reminder for tomorrow.
 If a specific time is not supported, offer to set a reminder for the equivalent duration (e.g., "in 24 hours") instead.`,
 						},
