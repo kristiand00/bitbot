@@ -72,58 +72,54 @@ func HandleFunctionCallWithContext(s *discordgo.Session, i *discordgo.Interactio
 		when, _ := call.Args["when"].(string)
 		message, _ := call.Args["message"].(string)
 		resp, err := AddReminderCore(userID, channelID, who, when, message)
-		status := "success"
-		var text string
 		if err != nil {
-			status = "error"
-			text = resp // Show error to user
+			// Error: return only Text
+			return &genai.Part{
+				Text: resp,
+			}, nil
 		}
+		// Success: return only FunctionResponse
 		return &genai.Part{
 			FunctionResponse: &genai.FunctionResponse{
 				Name: "add_reminder",
 				Response: map[string]interface{}{
-					"status":  status,
+					"status":  "success",
 					"message": resp,
 				},
 			},
-			Text: text,
 		}, nil
 	case "list_reminders":
 		resp, err := ListRemindersCore(userID)
-		status := "success"
-		var text string
 		if err != nil {
-			status = "error"
-			text = resp
+			return &genai.Part{
+				Text: resp,
+			}, nil
 		}
 		return &genai.Part{
 			FunctionResponse: &genai.FunctionResponse{
 				Name: "list_reminders",
 				Response: map[string]interface{}{
-					"status":  status,
+					"status":  "success",
 					"message": resp,
 				},
 			},
-			Text: text,
 		}, nil
 	case "delete_reminder":
 		id, _ := call.Args["id"].(string)
 		resp, err := DeleteReminderCore(userID, id)
-		status := "success"
-		var text string
 		if err != nil {
-			status = "error"
-			text = resp
+			return &genai.Part{
+				Text: resp,
+			}, nil
 		}
 		return &genai.Part{
 			FunctionResponse: &genai.FunctionResponse{
 				Name: "delete_reminder",
 				Response: map[string]interface{}{
-					"status":  status,
+					"status":  "success",
 					"message": resp,
 				},
 			},
-			Text: text,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unknown function call: %s", call.Name)
