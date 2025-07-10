@@ -225,7 +225,7 @@ func prepareMessageForHistory(messageContent string, messageRole string, existin
 }
 
 // Rename chatGPT to chatbot everywhere
-func chatbot(session *discordgo.Session, channelID string, userMessageContent string) {
+func chatbot(session *discordgo.Session, userID string, channelID string, userMessageContent string) {
 	if geminiClient == nil {
 		log.Error("Gemini client is not initialized.")
 		_, _ = session.ChannelMessageSend(channelID, "Sorry, the chat service is not properly configured.")
@@ -251,7 +251,6 @@ func chatbot(session *discordgo.Session, channelID string, userMessageContent st
 	// Check if we need to start a new chat session
 	chatSession, exists := chatSessions[channelID]
 	if !exists {
-		// Correct: pass tools in the config struct
 		chat, err := geminiClient.Chats.Create(ctx, TextModelName, &genai.GenerateContentConfig{Tools: ReminderTools}, []*genai.Content{
 			{
 				Parts: []*genai.Part{genai.NewPartFromText(SystemInstruction)},
@@ -285,7 +284,7 @@ func chatbot(session *discordgo.Session, channelID string, userMessageContent st
 		// Check for function calls
 		if len(resp.Candidates) > 0 && len(resp.Candidates[0].Content.Parts) > 0 {
 			if fc := resp.Candidates[0].Content.Parts[0].FunctionCall; fc != nil {
-				part, err := handleFunctionCall(session, nil, fc)
+				part, err := handleFunctionCallWithContext(session, nil, fc, userID, channelID)
 				if err != nil {
 					log.Errorf("Error handling function call: %v", err)
 					handleGeminiError(err, session, channelID)
@@ -379,6 +378,63 @@ func handleFunctionCall(s *discordgo.Session, i *discordgo.InteractionCreate, ca
 		if userID == "" && s != nil {
 			userID = s.State.User.ID
 		}
+		resp, err := DeleteReminderCore(userID, id)
+		status := "success"
+		if err != nil {
+			status = "error"
+		}
+		return &genai.Part{
+			FunctionResponse: &genai.FunctionResponse{
+				Name: "delete_reminder",
+				Response: map[string]interface{}{
+					"status":  status,
+					"message": resp,
+				},
+			},
+		}, nil
+	default:
+		return nil, fmt.Errorf("unknown function call: %s", call.Name)
+	}
+}
+
+// Add a new handleFunctionCallWithContext that uses userID and channelID
+func handleFunctionCallWithContext(s *discordgo.Session, i *discordgo.InteractionCreate, call *genai.FunctionCall, userID, channelID string) (*genai.Part, error) {
+	switch call.Name {
+	case "add_reminder":
+		who, _ := call.Args["who"].(string)
+		when, _ := call.Args["when"].(string)
+		message, _ := call.Args["message"].(string)
+		resp, err := AddReminderCore(userID, channelID, who, when, message)
+		status := "success"
+		if err != nil {
+			status = "error"
+		}
+		return &genai.Part{
+			FunctionResponse: &genai.FunctionResponse{
+				Name: "add_reminder",
+				Response: map[string]interface{}{
+					"status":  status,
+					"message": resp,
+				},
+			},
+		}, nil
+	case "list_reminders":
+		resp, err := ListRemindersCore(userID)
+		status := "success"
+		if err != nil {
+			status = "error"
+		}
+		return &genai.Part{
+			FunctionResponse: &genai.FunctionResponse{
+				Name: "list_reminders",
+				Response: map[string]interface{}{
+					"status":  status,
+					"message": resp,
+				},
+			},
+		}, nil
+	case "delete_reminder":
+		id, _ := call.Args["id"].(string)
 		resp, err := DeleteReminderCore(userID, id)
 		status := "success"
 		if err != nil {
