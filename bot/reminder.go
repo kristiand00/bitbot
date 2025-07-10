@@ -246,6 +246,153 @@ func handleDeleteReminder(s *discordgo.Session, i *discordgo.InteractionCreate) 
 	respondWithMessage(s, i, "Reminder deleted successfully.")
 }
 
+// --- Context-free Reminder Logic for Gemini and Discord ---
+
+// AddReminderCore adds a reminder for a user, given user/channel context and arguments.
+func AddReminderCore(userID, channelID, whoArg, whenArg, messageArg string) (string, error) {
+	if whoArg == "" || whenArg == "" || messageArg == "" {
+		return "Missing required arguments for adding a reminder.", fmt.Errorf("missing arguments")
+	}
+
+	// 1. Parse 'who' argument
+	var targetUserIDs []string
+	rawTargetUserIDs := strings.Split(whoArg, ",")
+	for _, idStr := range rawTargetUserIDs {
+		trimmedID := strings.TrimSpace(idStr)
+		if trimmedID == "@me" {
+			targetUserIDs = append(targetUserIDs, userID)
+		} else {
+			re := regexp.MustCompile(`<@!?(\d+)>`)
+			matches := re.FindStringSubmatch(trimmedID)
+			if len(matches) == 2 {
+				targetUserIDs = append(targetUserIDs, matches[1])
+			} else if _, err := strconv.ParseUint(trimmedID, 10, 64); err == nil {
+				targetUserIDs = append(targetUserIDs, trimmedID)
+			} else {
+				return fmt.Sprintf("Invalid user format: '%s'. Please use @mention, user ID, or '@me'.", trimmedID), fmt.Errorf("invalid user format")
+			}
+		}
+	}
+	if len(targetUserIDs) == 0 {
+		return "No valid target users specified.", fmt.Errorf("no valid target users")
+	}
+	// Remove duplicates
+	seen := make(map[string]bool)
+	uniqueTargetUserIDs := []string{}
+	for _, id := range targetUserIDs {
+		if !seen[id] {
+			seen[id] = true
+			uniqueTargetUserIDs = append(uniqueTargetUserIDs, id)
+		}
+	}
+	targetUserIDs = uniqueTargetUserIDs
+
+	// 2. Parse 'when' argument
+	reminderTime, isRecurring, recurrenceRule, err := parseWhenSimple(whenArg)
+	if err != nil {
+		return fmt.Sprintf("Error parsing 'when' argument: %v. Supported formats: 'in Xm/Xh/Xd'", err), err
+	}
+
+	// 3. Create Reminder struct
+	reminderTime = reminderTime.In(reminderLocation)
+	var nextReminderTime time.Time
+	if isRecurring {
+		nextReminderTime = reminderTime
+	}
+	reminder := &pb.Reminder{
+		UserID:           userID,
+		TargetUserIDs:    targetUserIDs,
+		Message:          messageArg,
+		ChannelID:        channelID,
+		GuildID:          "", // Not used for Gemini
+		ReminderTime:     reminderTime,
+		IsRecurring:      isRecurring,
+		RecurrenceRule:   recurrenceRule,
+		NextReminderTime: nextReminderTime,
+	}
+
+	// 4. Save to PocketBase
+	err = pb.CreateReminder(reminder)
+	if err != nil {
+		return "Sorry, I couldn't save your reminder. Please try again later.", err
+	}
+
+	// 5. Confirm to user
+	var targetUsersString []string
+	for _, uid := range targetUserIDs {
+		targetUsersString = append(targetUsersString, fmt.Sprintf("<@%s>", uid))
+	}
+
+	timeFormat := "Jan 2, 2006 at 15:04 (Europe/Zagreb)"
+	confirmationMsg := fmt.Sprintf("Okay, I'll remind %s on %s about: \"%s\"",
+		strings.Join(targetUsersString, ", "),
+		reminderTime.Format(timeFormat),
+		messageArg)
+	if isRecurring {
+		confirmationMsg += fmt.Sprintf(" (recurs %s)", recurrenceRule)
+	}
+	return confirmationMsg, nil
+}
+
+// ListRemindersCore lists all reminders for a user.
+func ListRemindersCore(userID string) (string, error) {
+	reminders, err := pb.ListRemindersByUser(userID)
+	if err != nil {
+		return "Could not fetch your reminders. Please try again later.", err
+	}
+	if len(reminders) == 0 {
+		return "You have no active reminders.", nil
+	}
+
+	timeFormat := "Jan 2, 2006 at 3:04 PM (Europe/Zagreb)"
+	var contentBuilder strings.Builder
+	contentBuilder.WriteString("Your active reminders:\n\n")
+	for idx, r := range reminders {
+		var nextDue time.Time
+		if r.IsRecurring {
+			nextDue = r.NextReminderTime
+		} else {
+			nextDue = r.ReminderTime
+		}
+		var nextDueStr string
+		if !nextDue.IsZero() {
+			nextDueStr = nextDue.In(reminderLocation).Format(timeFormat)
+		} else {
+			nextDueStr = "N/A (Error in time)"
+		}
+		var targets []string
+		for _, tUID := range r.TargetUserIDs {
+			targets = append(targets, fmt.Sprintf("<@%s>", tUID))
+		}
+		targetStr := strings.Join(targets, ", ")
+		contentBuilder.WriteString(fmt.Sprintf("%d. To: %s\nMessage: %s\nNext Due: %s\nID: %s\n", idx+1, targetStr, r.Message, nextDueStr, r.ID))
+		if r.IsRecurring {
+			contentBuilder.WriteString(fmt.Sprintf("Recurs: %s\n", r.RecurrenceRule))
+		}
+		contentBuilder.WriteString("\n")
+	}
+	return contentBuilder.String(), nil
+}
+
+// DeleteReminderCore deletes a reminder by ID for a user.
+func DeleteReminderCore(userID, reminderID string) (string, error) {
+	if reminderID == "" {
+		return "Missing reminder ID to delete.", fmt.Errorf("missing reminder ID")
+	}
+	reminder, err := pb.GetReminderByID(reminderID)
+	if err != nil {
+		return "Could not find the reminder to delete.", err
+	}
+	if reminder.UserID != userID {
+		return "You can only delete reminders you created.", fmt.Errorf("not allowed")
+	}
+	err = pb.DeleteReminder(reminderID)
+	if err != nil {
+		return "Failed to delete the reminder. Please try again.", err
+	}
+	return "Reminder deleted successfully.", nil
+}
+
 // parseWhenSimple is a basic parser for "in Xm/h/d" and other supported formats.
 func parseWhenSimple(whenStr string) (time.Time, bool, string, error) {
 	whenStr = strings.ToLower(strings.TrimSpace(whenStr))

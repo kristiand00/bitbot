@@ -204,7 +204,7 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 	isPrivateChannel := message.GuildID == ""
 
 	if strings.HasPrefix(message.Content, "!bit") || isPrivateChannel {
-		chatGPT(discord, message.ChannelID, message.Content)
+		chatbot(discord, message.ChannelID, message.Content)
 	}
 
 	if strings.HasPrefix(message.Content, "!roll") {
