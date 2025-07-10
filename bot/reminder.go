@@ -411,6 +411,15 @@ func parseWhenSimple(whenStr string) (time.Time, bool, string, error) {
 	// Also handle e.g. 'in 10 m' -> 'in 10m'
 	whenStr = strings.ReplaceAll(whenStr, " ", "")
 
+	// --- NEW: Normalize missing spaces in common expressions ---
+	// Insert a space before 'at' if missing after 'tomorrow', 'today', 'next<weekday>'
+	// e.g., 'tomorrowat8pm' -> 'tomorrow at 8pm', 'nextmondayat9am' -> 'next monday at 9am'
+	whenStr = regexp.MustCompile(`(tomorrow|today|next[a-z]+)at`).ReplaceAllString(whenStr, "$1 at ")
+	// Also handle 'everydayat8am' -> 'every day at 8am'
+	whenStr = regexp.MustCompile(`everydayat`).ReplaceAllString(whenStr, "every day at ")
+	// Optionally, handle 'everymondayat' -> 'every monday at '
+	whenStr = regexp.MustCompile(`every([a-z]+)at`).ReplaceAllString(whenStr, "every $1 at ")
+
 	now := time.Now().In(reminderLocation)
 	isRecurring := false
 	recurrenceRule := ""
