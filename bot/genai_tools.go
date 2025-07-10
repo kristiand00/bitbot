@@ -73,8 +73,10 @@ func HandleFunctionCallWithContext(s *discordgo.Session, i *discordgo.Interactio
 		message, _ := call.Args["message"].(string)
 		resp, err := AddReminderCore(userID, channelID, who, when, message)
 		status := "success"
+		var text string
 		if err != nil {
 			status = "error"
+			text = resp // Show error to user
 		}
 		return &genai.Part{
 			FunctionResponse: &genai.FunctionResponse{
@@ -84,12 +86,15 @@ func HandleFunctionCallWithContext(s *discordgo.Session, i *discordgo.Interactio
 					"message": resp,
 				},
 			},
+			Text: text,
 		}, nil
 	case "list_reminders":
 		resp, err := ListRemindersCore(userID)
 		status := "success"
+		var text string
 		if err != nil {
 			status = "error"
+			text = resp
 		}
 		return &genai.Part{
 			FunctionResponse: &genai.FunctionResponse{
@@ -99,13 +104,16 @@ func HandleFunctionCallWithContext(s *discordgo.Session, i *discordgo.Interactio
 					"message": resp,
 				},
 			},
+			Text: text,
 		}, nil
 	case "delete_reminder":
 		id, _ := call.Args["id"].(string)
 		resp, err := DeleteReminderCore(userID, id)
 		status := "success"
+		var text string
 		if err != nil {
 			status = "error"
+			text = resp
 		}
 		return &genai.Part{
 			FunctionResponse: &genai.FunctionResponse{
@@ -115,6 +123,7 @@ func HandleFunctionCallWithContext(s *discordgo.Session, i *discordgo.Interactio
 					"message": resp,
 				},
 			},
+			Text: text,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unknown function call: %s", call.Name)
