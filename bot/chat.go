@@ -19,55 +19,6 @@ const (
 	SystemInstruction = "your name is !bit you are a discord bot, you use brief answers untill asked to elaborate or explain. you can also set reminders for users."
 )
 
-// ReminderTools defines the tools available to the Gemini model for reminders.
-var ReminderTools = []*genai.Tool{
-	{
-		FunctionDeclarations: []*genai.FunctionDeclaration{
-			{
-				Name:        "add_reminder",
-				Description: "Adds a reminder for a user.",
-				Parameters: &genai.Schema{
-					Type: genai.TypeObject,
-					Properties: map[string]*genai.Schema{
-						"who": {
-							Type:        genai.TypeString,
-							Description: "The user to remind. Can be a user ID or '@me'.",
-						},
-						"when": {
-							Type:        genai.TypeString,
-							Description: "When to send the reminder, e.g., 'in 5 minutes', 'every day at 3pm'.",
-						},
-						"message": {
-							Type:        genai.TypeString,
-							Description: "The reminder message.",
-						},
-					},
-					Required: []string{"who", "when", "message"},
-				},
-			},
-			{
-				Name:        "list_reminders",
-				Description: "Lists all reminders for the user.",
-				Parameters:  &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{}},
-			},
-			{
-				Name:        "delete_reminder",
-				Description: "Deletes a reminder by its ID.",
-				Parameters: &genai.Schema{
-					Type: genai.TypeObject,
-					Properties: map[string]*genai.Schema{
-						"id": {
-							Type:        genai.TypeString,
-							Description: "The ID of the reminder to delete.",
-						},
-					},
-					Required: []string{"id"},
-				},
-			},
-		},
-	},
-}
-
 var (
 	geminiClient *genai.Client
 	chatSessions = make(map[string]*genai.Chat)
@@ -207,24 +158,6 @@ func handleGeminiError(err error, session *discordgo.Session, channelID string) 
 	}
 }
 
-// getGeminiTextResponseForVoice function REMOVED
-
-// prepareMessageForHistory converts a message content and role into *genai.Content
-// and appends it to the existing history.
-func prepareMessageForHistory(messageContent string, messageRole string, existingHistory []*genai.Content) []*genai.Content {
-	if messageRole != "user" && messageRole != "model" {
-		log.Warnf("Invalid message role: %s. Role must be 'user' or 'model'.", messageRole)
-		return existingHistory
-	}
-	newMessage := &genai.Content{
-		Parts: []*genai.Part{genai.NewPartFromText(messageContent)},
-		Role:  messageRole,
-	}
-	updatedHistory := append(existingHistory, newMessage)
-	return updatedHistory
-}
-
-// Rename chatGPT to chatbot everywhere
 func chatbot(session *discordgo.Session, userID string, channelID string, userMessageContent string) {
 	if geminiClient == nil {
 		log.Error("Gemini client is not initialized.")
@@ -284,7 +217,7 @@ func chatbot(session *discordgo.Session, userID string, channelID string, userMe
 		// Check for function calls
 		if len(resp.Candidates) > 0 && len(resp.Candidates[0].Content.Parts) > 0 {
 			if fc := resp.Candidates[0].Content.Parts[0].FunctionCall; fc != nil {
-				part, err := handleFunctionCallWithContext(session, nil, fc, userID, channelID)
+				part, err := HandleFunctionCallWithContext(session, nil, fc, userID, channelID)
 				if err != nil {
 					log.Errorf("Error handling function call: %v", err)
 					handleGeminiError(err, session, channelID)
@@ -314,144 +247,3 @@ func chatbot(session *discordgo.Session, userID string, channelID string, userMe
 		log.Errorf("Error sending message to Discord: %v", err)
 	}
 }
-
-// handleFunctionCall processes a function call from the Gemini model.
-func handleFunctionCall(s *discordgo.Session, i *discordgo.InteractionCreate, call *genai.FunctionCall) (*genai.Part, error) {
-	// Get userID and channelID from session context if possible
-	var userID, channelID string
-	if i != nil {
-		if i.Member != nil && i.Member.User != nil {
-			userID = i.Member.User.ID
-		}
-		if i.User != nil {
-			userID = i.User.ID
-		}
-		channelID = i.ChannelID
-	} else if s != nil {
-		// Fallback: try to get user/channel from session state (not always possible)
-		// For Gemini chat, we expect to pass these explicitly in the call
-	}
-
-	switch call.Name {
-	case "add_reminder":
-		who, _ := call.Args["who"].(string)
-		when, _ := call.Args["when"].(string)
-		message, _ := call.Args["message"].(string)
-		// For Gemini, userID and channelID must be set by the caller
-		if userID == "" && s != nil {
-			userID = s.State.User.ID // fallback to bot user (not ideal)
-		}
-		resp, err := AddReminderCore(userID, channelID, who, when, message)
-		status := "success"
-		if err != nil {
-			status = "error"
-		}
-		return &genai.Part{
-			FunctionResponse: &genai.FunctionResponse{
-				Name: "add_reminder",
-				Response: map[string]interface{}{
-					"status":  status,
-					"message": resp,
-				},
-			},
-		}, nil
-	case "list_reminders":
-		if userID == "" && s != nil {
-			userID = s.State.User.ID
-		}
-		resp, err := ListRemindersCore(userID)
-		status := "success"
-		if err != nil {
-			status = "error"
-		}
-		return &genai.Part{
-			FunctionResponse: &genai.FunctionResponse{
-				Name: "list_reminders",
-				Response: map[string]interface{}{
-					"status":  status,
-					"message": resp,
-				},
-			},
-		}, nil
-	case "delete_reminder":
-		id, _ := call.Args["id"].(string)
-		if userID == "" && s != nil {
-			userID = s.State.User.ID
-		}
-		resp, err := DeleteReminderCore(userID, id)
-		status := "success"
-		if err != nil {
-			status = "error"
-		}
-		return &genai.Part{
-			FunctionResponse: &genai.FunctionResponse{
-				Name: "delete_reminder",
-				Response: map[string]interface{}{
-					"status":  status,
-					"message": resp,
-				},
-			},
-		}, nil
-	default:
-		return nil, fmt.Errorf("unknown function call: %s", call.Name)
-	}
-}
-
-// Add a new handleFunctionCallWithContext that uses userID and channelID
-func handleFunctionCallWithContext(s *discordgo.Session, i *discordgo.InteractionCreate, call *genai.FunctionCall, userID, channelID string) (*genai.Part, error) {
-	switch call.Name {
-	case "add_reminder":
-		who, _ := call.Args["who"].(string)
-		when, _ := call.Args["when"].(string)
-		message, _ := call.Args["message"].(string)
-		resp, err := AddReminderCore(userID, channelID, who, when, message)
-		status := "success"
-		if err != nil {
-			status = "error"
-		}
-		return &genai.Part{
-			FunctionResponse: &genai.FunctionResponse{
-				Name: "add_reminder",
-				Response: map[string]interface{}{
-					"status":  status,
-					"message": resp,
-				},
-			},
-		}, nil
-	case "list_reminders":
-		resp, err := ListRemindersCore(userID)
-		status := "success"
-		if err != nil {
-			status = "error"
-		}
-		return &genai.Part{
-			FunctionResponse: &genai.FunctionResponse{
-				Name: "list_reminders",
-				Response: map[string]interface{}{
-					"status":  status,
-					"message": resp,
-				},
-			},
-		}, nil
-	case "delete_reminder":
-		id, _ := call.Args["id"].(string)
-		resp, err := DeleteReminderCore(userID, id)
-		status := "success"
-		if err != nil {
-			status = "error"
-		}
-		return &genai.Part{
-			FunctionResponse: &genai.FunctionResponse{
-				Name: "delete_reminder",
-				Response: map[string]interface{}{
-					"status":  status,
-					"message": resp,
-				},
-			},
-		}, nil
-	default:
-		return nil, fmt.Errorf("unknown function call: %s", call.Name)
-	}
-}
-
-// processTranscribedVoiceInput function REMOVED
