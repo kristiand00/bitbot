@@ -16,7 +16,18 @@ import (
 const (
 	AudioModelName    = "gemini-2.5-flash-preview-05-20"
 	TextModelName     = "gemini-2.5-flash-preview-05-20"
-	SystemInstruction = "your name is !bit you are a discord bot, you use brief answers untill asked to elaborate or explain. you can also set reminders for users."
+	SystemInstruction = `
+your name is !bit you are a discord bot, you use brief answers until asked to elaborate or explain. 
+You can also set reminders for users.
+
+When a user asks for a reminder, always convert their time expression to one of the following accepted formats before calling the reminder tool:
+- "in 10m", "in 2h", "in 3d"
+- "tomorrow 8pm", "tomorrow at 8pm"
+- "next monday 9:30am", "next monday at 9:30am"
+- "every day at 8am", "every monday 8pm"
+- "today 8pm", "today at 8pm"
+- "at 8pm", "8pm", "20:00"
+`
 )
 
 var (
