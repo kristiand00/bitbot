@@ -412,25 +412,21 @@ func parseWhenSimple(whenStr string) (time.Time, bool, string, error) {
 	whenStr = strings.ReplaceAll(whenStr, " ", "")
 
 	// --- NEW: Normalize missing spaces in common expressions ---
-	// Insert a space before 'at' if missing after 'tomorrow', 'today', 'next<weekday>'
-	// e.g., 'tomorrowat8pm' -> 'tomorrow at 8pm', 'nextmondayat9am' -> 'next monday at 9am'
 	whenStr = regexp.MustCompile(`(tomorrow|today|next[a-z]+)at`).ReplaceAllString(whenStr, "$1 at ")
-	// Also handle 'everydayat8am' -> 'every day at 8am'
 	whenStr = regexp.MustCompile(`everydayat`).ReplaceAllString(whenStr, "every day at ")
-	// Optionally, handle 'everymondayat' -> 'every monday at '
 	whenStr = regexp.MustCompile(`every([a-z]+)at`).ReplaceAllString(whenStr, "every $1 at ")
 
 	now := time.Now().In(reminderLocation)
 	isRecurring := false
 	recurrenceRule := ""
 
-	// Check for "every" keyword for recurrence
+	// Check for 'every' keyword for recurrence
 	if strings.HasPrefix(whenStr, "every") {
 		isRecurring = true
 		whenStr = strings.TrimPrefix(whenStr, "every")
 	}
 
-	// Regex for "in Xunit" or "Xunit"
+	// Regex for 'in Xunit' or 'Xunit'
 	re := regexp.MustCompile(`^(?:in)?(\d+)([mhd])$`)
 	matches := re.FindStringSubmatch(whenStr)
 
@@ -469,8 +465,71 @@ func parseWhenSimple(whenStr string) (time.Time, bool, string, error) {
 		return now.Add(duration), isRecurring, recurrenceRule, nil
 	}
 
-	// For now, only "in Xm/h/d" is supported for non-recurring.
-	// And "every Xm/h/d" for recurring.
+	// --- NEW: Support for 'tomorrow at 8pm', 'today at 8pm', 'next monday at 9:30am' ---
+	// tomorrow at X
+	if strings.HasPrefix(whenStr, "tomorrow at ") {
+		timePart := strings.TrimPrefix(whenStr, "tomorrow at ")
+		t, err := parseTimeOfDay(timePart)
+		if err != nil {
+			return time.Time{}, false, "", fmt.Errorf("invalid time of day: %v", err)
+		}
+		tomorrow := now.AddDate(0, 0, 1)
+		reminderTime := time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), t.Hour(), t.Minute(), 0, 0, reminderLocation)
+		return reminderTime, false, "", nil
+	}
+	// today at X
+	if strings.HasPrefix(whenStr, "today at ") {
+		timePart := strings.TrimPrefix(whenStr, "today at ")
+		t, err := parseTimeOfDay(timePart)
+		if err != nil {
+			return time.Time{}, false, "", fmt.Errorf("invalid time of day: %v", err)
+		}
+		reminderTime := time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), 0, 0, reminderLocation)
+		// If the time has already passed today, set for tomorrow
+		if !reminderTime.After(now) {
+			reminderTime = reminderTime.AddDate(0, 0, 1)
+		}
+		return reminderTime, false, "", nil
+	}
+	// next <weekday> at X
+	nextDayRe := regexp.MustCompile(`^next([a-z]+) at (.+)$`)
+	if m := nextDayRe.FindStringSubmatch(whenStr); len(m) == 3 {
+		weekdayStr := m[1]
+		timePart := m[2]
+		baseDay, err := parseNextDay(weekdayStr)
+		if err != nil {
+			return time.Time{}, false, "", fmt.Errorf("invalid weekday: %v", err)
+		}
+		t, err := parseTimeOfDay(timePart)
+		if err != nil {
+			return time.Time{}, false, "", fmt.Errorf("invalid time of day: %v", err)
+		}
+		reminderTime := time.Date(baseDay.Year(), baseDay.Month(), baseDay.Day(), t.Hour(), t.Minute(), 0, 0, reminderLocation)
+		return reminderTime, false, "", nil
+	}
+	// at X (today or tomorrow)
+	if strings.HasPrefix(whenStr, "at ") {
+		timePart := strings.TrimPrefix(whenStr, "at ")
+		t, err := parseTimeOfDay(timePart)
+		if err != nil {
+			return time.Time{}, false, "", fmt.Errorf("invalid time of day: %v", err)
+		}
+		reminderTime := time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), 0, 0, reminderLocation)
+		if !reminderTime.After(now) {
+			reminderTime = reminderTime.AddDate(0, 0, 1)
+		}
+		return reminderTime, false, "", nil
+	}
+	// Xpm/Xam/HH:MM (today or tomorrow)
+	t, err := parseTimeOfDay(whenStr)
+	if err == nil {
+		reminderTime := time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), 0, 0, reminderLocation)
+		if !reminderTime.After(now) {
+			reminderTime = reminderTime.AddDate(0, 0, 1)
+		}
+		return reminderTime, false, "", nil
+	}
+
 	if isRecurring {
 		return time.Time{}, false, "", fmt.Errorf("unsupported recurring format: '%s'. Try 'every Xm/Xh/Xd', 'every day at Xam/pm', or 'every monday 8pm'. Tip: You can also use 'every day at 8am', 'every monday 8pm', etc.", whenStr)
 	}
