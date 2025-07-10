@@ -25,13 +25,13 @@ var ReminderTools = []*genai.Tool{
 							Type: genai.TypeString,
 							Description: `When to send the reminder. 
 Accepted formats: 
-- "in 10m", "in 2h", "in 3d"
-- "tomorrow 8pm", "tomorrow at 8pm"
-- "next monday 9:30am", "next monday at 9:30am"
-- "every day at 8am", "every monday 8pm"
-- "today 8pm", "today at 8pm"
-- "at 8pm", "8pm", "20:00"
-Always convert user input to one of these formats before calling this tool.`,
+- "in 10m", "in 2h", "in 3d" (duration)
+- "every 10m", "every 2h", "every 3d" (recurring duration)
+- "tomorrow at 8pm", "next monday at 9:30am", "today at 8pm", "at 8pm", "8pm", "20:00" (specific time)
+- "every day at 8am", "every monday 8pm" (recurring time)
+Always convert user input to one of these formats before calling this tool.
+If the time has already passed today, set the reminder for tomorrow.
+If a specific time is not supported, offer to set a reminder for the equivalent duration (e.g., "in 24 hours") instead.`,
 						},
 						"message": {
 							Type:        genai.TypeString,
