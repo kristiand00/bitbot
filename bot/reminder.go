@@ -393,21 +393,36 @@ func DeleteReminderCore(userID, reminderID string) (string, error) {
 	return "Reminder deleted successfully.", nil
 }
 
-// parseWhenSimple is a basic parser for "in Xm/h/d" and other supported formats.
+// parseWhenSimple is a basic parser for "in Xm/Xh/Xd" and other supported formats.
 func parseWhenSimple(whenStr string) (time.Time, bool, string, error) {
 	whenStr = strings.ToLower(strings.TrimSpace(whenStr))
+	// Normalize natural language variants to compact format
+	replacements := []struct{ from, to string }{
+		{"minutes", "m"},
+		{"minute", "m"},
+		{"hours", "h"},
+		{"hour", "h"},
+		{"days", "d"},
+		{"day", "d"},
+	}
+	for _, r := range replacements {
+		whenStr = strings.ReplaceAll(whenStr, r.from, r.to)
+	}
+	// Also handle e.g. 'in 10 m' -> 'in 10m'
+	whenStr = strings.ReplaceAll(whenStr, " ", "")
+
 	now := time.Now().In(reminderLocation)
 	isRecurring := false
 	recurrenceRule := ""
 
 	// Check for "every" keyword for recurrence
-	if strings.HasPrefix(whenStr, "every ") {
+	if strings.HasPrefix(whenStr, "every") {
 		isRecurring = true
-		whenStr = strings.TrimPrefix(whenStr, "every ")
+		whenStr = strings.TrimPrefix(whenStr, "every")
 	}
 
 	// Regex for "in Xunit" or "Xunit"
-	re := regexp.MustCompile(`^(?:in\s+)?(\d+)\s*([mhd])$`)
+	re := regexp.MustCompile(`^(?:in)?(\d+)([mhd])$`)
 	matches := re.FindStringSubmatch(whenStr)
 
 	if len(matches) == 3 {
