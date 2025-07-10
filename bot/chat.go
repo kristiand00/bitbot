@@ -1,11 +1,8 @@
 package bot
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -139,17 +136,18 @@ func InitGeminiClient(apiKey string) error {
 	geminiClient = client
 	lastRequestTime = time.Now()
 
-	// Test the model availability
+	// Test the text model availability only
 	log.Info("Starting model availability tests...")
-	if err := testModelAvailability(ctx); err != nil {
-		log.Warnf("Failed to test model availability: %v", err)
+	if err := testTextModelAvailability(ctx); err != nil {
+		log.Warnf("Failed to test text model availability: %v", err)
 	}
 
 	log.Infof("GenAI Client initialization completed in %v", time.Since(startTime))
 	return nil
 }
 
-func testModelAvailability(ctx context.Context) error {
+// Only test text model availability
+func testTextModelAvailability(ctx context.Context) error {
 	startTime := time.Now()
 
 	log.Info("Testing text model availability...")
@@ -168,59 +166,6 @@ func testModelAvailability(ctx context.Context) error {
 		return fmt.Errorf("text model %s is not available: %v", TextModelName, err)
 	}
 	log.Infof("Text model %s is available (test took %v)", TextModelName, time.Since(startTime))
-
-	// Test audio model with Live API
-	log.Info("Testing audio model availability with Live API...")
-	audioTestStart := time.Now()
-
-	// Create Live API request
-	apiURL := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:streamGenerateContent?key=%s", AudioModelName, geminiAPIKey)
-
-	requestBody := map[string]interface{}{
-		"contents": []map[string]interface{}{
-			{
-				"parts": []map[string]interface{}{
-					{
-						"text": "test audio",
-					},
-				},
-			},
-		},
-	}
-
-	jsonData, err := json.Marshal(requestBody)
-	if err != nil {
-		return fmt.Errorf("failed to marshal request: %v", err)
-	}
-
-	// Create HTTP request
-	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %v", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-goog-api-key", geminiAPIKey)
-
-	// Send request
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to send request: %v", err)
-	}
-	defer resp.Body.Close()
-
-	// Read response
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response: %v", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("audio model test failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	log.Infof("Audio model %s is available via Live API (test took %v)", AudioModelName, time.Since(audioTestStart))
-	log.Infof("All model availability tests completed in %v", time.Since(startTime))
 	return nil
 }
 
