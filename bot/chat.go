@@ -27,7 +27,8 @@ When a user asks for a reminder, always convert their time expression to one of 
 - "every day at 8am", "every monday 8pm"
 - "today 8pm", "today at 8pm"
 - "at 8pm", "8pm", "20:00"
-`
+
+After calling a tool, always reply to the user in natural language summarizing the result. Do not call another tool unless the user explicitly asks for another action.`
 )
 
 var (
@@ -214,7 +215,6 @@ func chatbot(session *discordgo.Session, userID string, channelID string, userMe
 	history := chatSession.History(false) // Get full history
 	log.Infof("Chat history length: %d", len(history))
 
-	// Send the message and get response
 	resp, err := chatSession.SendMessage(ctx, genai.Part{Text: userMessageContent})
 	if err != nil {
 		log.Errorf("Error getting response from AI: %v", err)
@@ -222,39 +222,42 @@ func chatbot(session *discordgo.Session, userID string, channelID string, userMe
 		return
 	}
 
-	// Extract the response text
-	respText := resp.Text()
-	if respText == "" {
-		// Check for function calls
-		if len(resp.Candidates) > 0 && len(resp.Candidates[0].Content.Parts) > 0 {
-			if fc := resp.Candidates[0].Content.Parts[0].FunctionCall; fc != nil {
-				part, err := HandleFunctionCallWithContext(session, nil, fc, userID, channelID)
-				if err != nil {
-					log.Errorf("Error handling function call: %v", err)
-					handleGeminiError(err, session, channelID)
-					return
-				}
-				// Send the function response back to the model
-				resp, err = chatSession.SendMessage(ctx, *part)
-				if err != nil {
-					log.Errorf("Error sending function response to AI: %v", err)
-					handleGeminiError(err, session, channelID)
-					return
-				}
-				respText = resp.Text()
+	// Robust function call handling loop
+	for {
+		respText := resp.Text()
+		if respText != "" {
+			// Got a text reply, send to user
+			_, err = session.ChannelMessageSend(channelID, respText)
+			if err != nil {
+				log.Errorf("Error sending message to Discord: %v", err)
 			}
+			return
 		}
-	}
 
-	if respText == "" {
-		log.Error("Received empty response from AI")
-		_, _ = session.ChannelMessageSend(channelID, "Sorry, I received an empty response from the AI service.")
-		return
-	}
-
-	// Send the response back to Discord
-	_, err = session.ChannelMessageSend(channelID, respText)
-	if err != nil {
-		log.Errorf("Error sending message to Discord: %v", err)
+		// Check for function call
+		var fc *genai.FunctionCall
+		if len(resp.Candidates) > 0 && len(resp.Candidates[0].Content.Parts) > 0 {
+			fc = resp.Candidates[0].Content.Parts[0].FunctionCall
+		}
+		if fc == nil {
+			log.Error("No text or function call in response")
+			_, _ = session.ChannelMessageSend(channelID, "Sorry, I received an empty response from the AI service.")
+			return
+		}
+		log.Infof("Handling function call: %s", fc.Name)
+		part, err := HandleFunctionCallWithContext(session, nil, fc, userID, channelID)
+		if err != nil {
+			log.Errorf("Error handling function call: %v", err)
+			handleGeminiError(err, session, channelID)
+			return
+		}
+		log.Infof("Function call '%s' result: %+v", fc.Name, part)
+		// Send the function response back to the model and continue the loop
+		resp, err = chatSession.SendMessage(ctx, *part)
+		if err != nil {
+			log.Errorf("Error sending function response to AI: %v", err)
+			handleGeminiError(err, session, channelID)
+			return
+		}
 	}
 }
