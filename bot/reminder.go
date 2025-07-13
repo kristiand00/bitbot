@@ -438,6 +438,7 @@ func parseWhenSimple(whenStr string) (time.Time, bool, string, error) {
 	if strings.HasPrefix(whenStr, "every") {
 		isRecurring = true
 		whenStr = strings.TrimPrefix(whenStr, "every")
+		whenStr = strings.TrimSpace(whenStr) // Trim any leading/trailing spaces
 	}
 
 	// Regex for 'in Xunit' or 'Xunit'
