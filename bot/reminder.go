@@ -409,13 +409,15 @@ func parseWhenSimple(whenStr string) (time.Time, bool, string, error) {
 	for _, r := range replacements {
 		whenStr = strings.ReplaceAll(whenStr, r.from, r.to)
 	}
-	// Also handle e.g. 'in 10 m' -> 'in 10m'
-	whenStr = strings.ReplaceAll(whenStr, " ", "")
-
 	// --- NEW: Normalize missing spaces in common expressions ---
 	whenStr = regexp.MustCompile(`(tomorrow|today|next[a-z]+)at`).ReplaceAllString(whenStr, "$1 at ")
 	whenStr = regexp.MustCompile(`everydayat`).ReplaceAllString(whenStr, "every day at ")
 	whenStr = regexp.MustCompile(`every([a-z]+)at`).ReplaceAllString(whenStr, "every $1 at ")
+
+	// Also handle e.g. 'in 10 m' -> 'in 10m' (but only for duration formats)
+	if strings.HasPrefix(whenStr, "in ") || regexp.MustCompile(`^\d+[mhd]$`).MatchString(whenStr) {
+		whenStr = strings.ReplaceAll(whenStr, " ", "")
+	}
 
 	// Handle malformed day abbreviations (e.g., "sun8pm" -> "every sunday 8pm")
 	whenStr = regexp.MustCompile(`^(sun|mon|tue|wed|thu|fri|sat)([0-9:]+[ap]m)$`).ReplaceAllString(whenStr, "every $1day $2")
