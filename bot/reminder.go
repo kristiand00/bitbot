@@ -397,18 +397,19 @@ func DeleteReminderCore(userID, reminderID string) (string, error) {
 func parseWhenSimple(whenStr string) (time.Time, bool, string, error) {
 	whenStr = strings.ToLower(strings.TrimSpace(whenStr))
 	log.Infof("parseWhenSimple: original input: '%s'", whenStr)
-	// Normalize natural language variants to compact format
+	// Normalize natural language variants to compact format (but be careful with day names)
 	replacements := []struct{ from, to string }{
 		{"minutes", "m"},
 		{"minute", "m"},
 		{"hours", "h"},
 		{"hour", "h"},
-		{"days", "d"},
-		{"day", "d"},
 	}
 	for _, r := range replacements {
 		whenStr = strings.ReplaceAll(whenStr, r.from, r.to)
 	}
+
+	// Handle "days" and "day" more carefully to avoid affecting day names
+	whenStr = regexp.MustCompile(`\b(\d+)\s*days?\b`).ReplaceAllString(whenStr, "$1d")
 	// --- NEW: Normalize missing spaces in common expressions ---
 	whenStr = regexp.MustCompile(`(tomorrow|today|next[a-z]+)at`).ReplaceAllString(whenStr, "$1 at ")
 	whenStr = regexp.MustCompile(`everydayat`).ReplaceAllString(whenStr, "every day at ")
