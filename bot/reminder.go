@@ -547,8 +547,8 @@ func parseWhenSimple(whenStr string) (time.Time, bool, string, error) {
 
 	// --- NEW: Support for recurring time formats like "every sunday 8pm" ---
 	if isRecurring {
-		// every <weekday> <time>
-		recurringDayRe := regexp.MustCompile(`^every ([a-z]+) ([0-9:]+[ap]m|[0-9:]+)$`)
+		// <weekday> <time> (after "every" has been removed)
+		recurringDayRe := regexp.MustCompile(`^([a-z]+) ([0-9:]+[ap]m|[0-9:]+)$`)
 		if m := recurringDayRe.FindStringSubmatch(whenStr); len(m) == 3 {
 			weekdayStr := m[1]
 			timePart := m[2]
