@@ -3,7 +3,6 @@ package bot
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"sync"
 	"time"
 
@@ -14,13 +13,14 @@ import (
 
 // Model name constants
 const (
-	AudioModelName    = "gemini-2.5-flash-preview-05-20"
-	TextModelName     = "gemini-2.5-flash-preview-05-20"
+	AudioModelName    = "gemini-2.5-flash"
+	TextModelName     = "gemini-2.5-flash"
 	SystemInstruction = `
-your name is !bit you are a discord bot, you use brief answers until asked to elaborate or explain. 
-You can also set reminders for users.
+Your name is !bit. You are a helpful Discord bot that can answer questions, have conversations, and assist users with various tasks.
 
-When a user asks for a reminder, always convert their time expression to one of the following accepted formats before calling the reminder tool:
+You use brief answers by default, but will elaborate or explain when asked to do so.
+
+One of your capabilities is setting reminders for users. When a user asks for a reminder, always convert their time expression to one of the following accepted formats before calling the reminder tool:
 - "in 10m", "in 2h", "in 3d" (duration)
 - "every 10m", "every 2h", "every 3d" (recurring duration)
 - "tomorrow at 8pm", "next monday at 9:30am", "today at 8pm", "at 8pm", "8pm", "20:00" (specific time)
@@ -38,12 +38,8 @@ If the time has already passed today, set the reminder for tomorrow.`
 )
 
 var (
-	geminiClient *genai.Client
-	chatSessions = make(map[string]*genai.Chat)
-	httpClient   = &http.Client{
-		Timeout: 30 * time.Second,
-	}
-	geminiAPIKey string // Store the API key for REST API calls
+	geminiClient        *genai.Client
+	conversationHistory = make(map[string][]*genai.Content) // Store conversation history per channel
 
 	// Rate limiting
 	requestCount         int
@@ -82,19 +78,15 @@ func InitGeminiClient(apiKey string) error {
 	log.Infof("Starting Gemini client initialization at %v", startTime)
 
 	if apiKey == "" {
-		return fmt.Errorf("Gemini API key is not provided")
+		return fmt.Errorf("gemini API key is not provided")
 	}
-	geminiAPIKey = apiKey // Store the API key
-	log.Info("API key stored, creating client context...")
 
 	ctx := context.Background()
 	log.Info("Creating new Gemini client...")
+	// Pass API key via ClientConfig
+	// If nil is passed instead, client would read from GEMINI_API_KEY environment variable
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		APIKey:  apiKey,
-		Backend: genai.BackendGeminiAPI,
-		HTTPOptions: genai.HTTPOptions{
-			APIVersion: "v1beta",
-		},
+		APIKey: apiKey,
 	})
 	if err != nil {
 		log.Errorf("Failed to create Generative Client: %v", err)
@@ -121,16 +113,8 @@ func testTextModelAvailability(ctx context.Context) error {
 
 	log.Info("Testing text model availability...")
 
-	// Test text model with a simple prompt
-	contents := []*genai.Content{
-		{
-			Parts: []*genai.Part{
-				genai.NewPartFromText("test"),
-			},
-		},
-	}
-
-	_, err := geminiClient.Models.GenerateContent(ctx, TextModelName, contents, nil)
+	// Test text model with a simple prompt using genai.Text helper
+	_, err := geminiClient.Models.GenerateContent(ctx, TextModelName, genai.Text("test"), nil)
 	if err != nil {
 		return fmt.Errorf("text model %s is not available: %v", TextModelName, err)
 	}
@@ -199,29 +183,29 @@ func chatbot(session *discordgo.Session, userID string, channelID string, userMe
 
 	log.Infof("Sending user message to AI: '%s'", userMessageContent)
 
-	// Check if we need to start a new chat session
-	chatSession, exists := chatSessions[channelID]
+	// Get or initialize conversation history for this channel
+	history, exists := conversationHistory[channelID]
 	if !exists {
-		chat, err := geminiClient.Chats.Create(ctx, TextModelName, &genai.GenerateContentConfig{Tools: ReminderTools}, []*genai.Content{
-			{
-				Parts: []*genai.Part{genai.NewPartFromText(SystemInstruction)},
-				Role:  genai.RoleUser,
-			},
-		})
-		if err != nil {
-			log.Errorf("Failed to create chat session: %v", err)
-			handleGeminiError(err, session, channelID)
-			return
-		}
-		chatSession = chat
-		chatSessions[channelID] = chatSession
+		history = []*genai.Content{}
 	}
 
-	// Get chat history for context
-	history := chatSession.History(false) // Get full history
-	log.Infof("Chat history length: %d", len(history))
+	// Add user message to history
+	userMessage := &genai.Content{
+		Parts: []*genai.Part{genai.NewPartFromText(userMessageContent)},
+		Role:  genai.RoleUser,
+	}
+	history = append(history, userMessage)
 
-	resp, err := chatSession.SendMessage(ctx, genai.Part{Text: userMessageContent})
+	// Prepare config with system instruction and tools
+	config := &genai.GenerateContentConfig{
+		SystemInstruction: &genai.Content{
+			Parts: []*genai.Part{genai.NewPartFromText(SystemInstruction)},
+		},
+		Tools: ReminderTools,
+	}
+
+	// Generate content with conversation history
+	resp, err := geminiClient.Models.GenerateContent(ctx, TextModelName, history, config)
 	if err != nil {
 		log.Errorf("Error getting response from AI: %v", err)
 		handleGeminiError(err, session, channelID)
@@ -237,6 +221,13 @@ func chatbot(session *discordgo.Session, userID string, channelID string, userMe
 			if err != nil {
 				log.Errorf("Error sending message to Discord: %v", err)
 			}
+			// Add assistant response to history and save
+			assistantMessage := &genai.Content{
+				Parts: []*genai.Part{genai.NewPartFromText(respText)},
+				Role:  genai.RoleModel,
+			}
+			history = append(history, assistantMessage)
+			conversationHistory[channelID] = history
 			return
 		}
 
@@ -251,6 +242,19 @@ func chatbot(session *discordgo.Session, userID string, channelID string, userMe
 			return
 		}
 		log.Infof("Handling function call: %s", fc.Name)
+
+		// Add function call to history
+		functionCallContent := &genai.Content{
+			Parts: []*genai.Part{
+				{
+					FunctionCall: fc,
+				},
+			},
+			Role: genai.RoleModel,
+		}
+		history = append(history, functionCallContent)
+
+		// Handle the function call
 		part, err := HandleFunctionCallWithContext(session, nil, fc, userID, channelID)
 		if err != nil {
 			log.Errorf("Error handling function call: %v", err)
@@ -258,8 +262,16 @@ func chatbot(session *discordgo.Session, userID string, channelID string, userMe
 			return
 		}
 		log.Infof("Function call '%s' result: %+v", fc.Name, part)
-		// Send the function response back to the model and continue the loop
-		resp, err = chatSession.SendMessage(ctx, *part)
+
+		// Add function response to history
+		functionResponseContent := &genai.Content{
+			Parts: []*genai.Part{part},
+			Role:  genai.RoleUser,
+		}
+		history = append(history, functionResponseContent)
+
+		// Generate content again with updated history
+		resp, err = geminiClient.Models.GenerateContent(ctx, TextModelName, history, config)
 		if err != nil {
 			log.Errorf("Error sending function response to AI: %v", err)
 			handleGeminiError(err, session, channelID)
