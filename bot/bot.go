@@ -143,6 +143,20 @@ func Run() {
 		log.Fatal(err)
 	}
 
+	// Initialize services before opening Discord connection
+	log.Info("Initializing PocketBase...")
+	pb.Init()
+	log.Info("PocketBase initialized successfully.")
+
+	if GeminiAPIKey == "" {
+		log.Fatal("Gemini API Key (GEMINI_API_KEY) is not set in environment variables.")
+	}
+	log.Info("Initializing Gemini Client...")
+	if err := InitGeminiClient(GeminiAPIKey); err != nil {
+		log.Fatalf("Failed to initialize Gemini Client: %v", err)
+	}
+	log.Info("Gemini Client initialized successfully.")
+
 	discord.AddHandler(commandHandler)
 	discord.AddHandler(newMessage)
 	discord.AddHandler(modalHandler)
@@ -155,27 +169,12 @@ func Run() {
 	}
 	defer discord.Close()
 
-	log.Info("Initializing PocketBase...")
-	pb.Init()
-	log.Info("PocketBase initialized successfully.")
-
 	log.Info("Registering commands...")
 	registerCommands(discord, AppId)
 	log.Info("BitBot is running...")
 
-	if GeminiAPIKey == "" {
-		log.Fatal("Gemini API Key (GEMINI_API_KEY) is not set in environment variables.")
-	}
-	log.Info("Initializing Gemini Client...")
-	if err := InitGeminiClient(GeminiAPIKey); err != nil {
-		log.Fatalf("Failed to initialize Gemini Client: %v", err)
-	}
-	log.Info("Gemini Client initialized successfully.")
-
 	go StartReminderScheduler(discord)
 
-	log.Info("Initializing PocketBase...")
-	pb.Init()
 	log.Info("Exiting... press CTRL + c again")
 
 	c := make(chan os.Signal, 1)
