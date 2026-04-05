@@ -30,6 +30,8 @@ Do NOT remove spaces between words in time expressions. Always use the exact for
 
 If a user requests a reminder for a specific date/time and it is not supported, offer to set a reminder for the equivalent duration instead (e.g., "Would you like me to set a reminder for 'in 24 hours' instead?").
 
+You also have the capability to manage SSH connections and execute commands on remote servers using the SSH tools provided. To execute commands, you must first connect to a server. You can also generate and show SSH keys. Note that only authorized users (admins) can use SSH tools. If an SSH tool fails due to lack of authorization, politely inform the user.
+
 If a tool returns an error message (as plain text), immediately reply to the user with that error and do not call the tool again unless the user asks for another attempt.
 
 After calling a tool, always reply to the user in natural language summarizing the result.
@@ -160,7 +162,7 @@ func handleGeminiError(err error, session *discordgo.Session, channelID string) 
 	}
 }
 
-func chatbot(session *discordgo.Session, userID string, channelID string, userMessageContent string) {
+func chatbot(session *discordgo.Session, userID string, channelID string, guildID string, userMessageContent string) {
 	if geminiClient == nil {
 		log.Error("Gemini client is not initialized.")
 		_, _ = session.ChannelMessageSend(channelID, "Sorry, the chat service is not properly configured.")
@@ -196,12 +198,15 @@ func chatbot(session *discordgo.Session, userID string, channelID string, userMe
 	}
 	history = append(history, userMessage)
 
+	// Combine tools
+	allTools := append(ReminderTools, SSHTools...)
+
 	// Prepare config with system instruction and tools
 	config := &genai.GenerateContentConfig{
 		SystemInstruction: &genai.Content{
 			Parts: []*genai.Part{genai.NewPartFromText(SystemInstruction)},
 		},
-		Tools: ReminderTools,
+		Tools: allTools,
 	}
 
 	// Generate content with conversation history
@@ -255,7 +260,7 @@ func chatbot(session *discordgo.Session, userID string, channelID string, userMe
 		history = append(history, functionCallContent)
 
 		// Handle the function call
-		part, err := HandleFunctionCallWithContext(session, nil, fc, userID, channelID)
+		part, err := HandleFunctionCallWithContext(session, nil, fc, userID, channelID, guildID)
 		if err != nil {
 			log.Errorf("Error handling function call: %v", err)
 			handleGeminiError(err, session, channelID)
