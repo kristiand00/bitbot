@@ -236,41 +236,50 @@ func chatbot(session *discordgo.Session, userID string, channelID string, guildI
 			return
 		}
 
-		// Check for function call
-		var fc *genai.FunctionCall
-		if len(resp.Candidates) > 0 && len(resp.Candidates[0].Content.Parts) > 0 {
-			fc = resp.Candidates[0].Content.Parts[0].FunctionCall
+		// Check for function calls
+		var functionCalls []*genai.FunctionCall
+		if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
+			for _, p := range resp.Candidates[0].Content.Parts {
+				if p.FunctionCall != nil {
+					functionCalls = append(functionCalls, p.FunctionCall)
+				}
+			}
 		}
-		if fc == nil {
+
+		if len(functionCalls) == 0 {
 			log.Error("No text or function call in response")
 			_, _ = session.ChannelMessageSend(channelID, "Sorry, I received an empty response from the AI service.")
 			return
 		}
-		log.Infof("Handling function call: %s", fc.Name)
 
-		// Add function call to history
+		// Add function calls to history
+		var modelParts []*genai.Part
+		for _, fc := range functionCalls {
+			modelParts = append(modelParts, &genai.Part{FunctionCall: fc})
+		}
 		functionCallContent := &genai.Content{
-			Parts: []*genai.Part{
-				{
-					FunctionCall: fc,
-				},
-			},
-			Role: genai.RoleModel,
+			Parts: modelParts,
+			Role:  genai.RoleModel,
 		}
 		history = append(history, functionCallContent)
 
-		// Handle the function call
-		part, err := HandleFunctionCallWithContext(session, nil, fc, userID, channelID, guildID)
-		if err != nil {
-			log.Errorf("Error handling function call: %v", err)
-			handleGeminiError(err, session, channelID)
-			return
+		// Handle the function calls
+		var responseParts []*genai.Part
+		for _, fc := range functionCalls {
+			log.Infof("Handling function call: %s", fc.Name)
+			part, err := HandleFunctionCallWithContext(session, nil, fc, userID, channelID, guildID)
+			if err != nil {
+				log.Errorf("Error handling function call: %v", err)
+				handleGeminiError(err, session, channelID)
+				return
+			}
+			log.Infof("Function call '%s' result: %+v", fc.Name, part)
+			responseParts = append(responseParts, part)
 		}
-		log.Infof("Function call '%s' result: %+v", fc.Name, part)
 
-		// Add function response to history
+		// Add function responses to history
 		functionResponseContent := &genai.Content{
-			Parts: []*genai.Part{part},
+			Parts: responseParts,
 			Role:  genai.RoleUser,
 		}
 		history = append(history, functionResponseContent)
