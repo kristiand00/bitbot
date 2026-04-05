@@ -196,6 +196,14 @@ func hasAdminRole(roles []string) bool {
 	return false
 }
 
+// CheckAdmin returns true if the user ID matches AllowedUserID or they have a matching role
+func CheckAdmin(userID string, roles []string) bool {
+	if userID == AllowedUserID {
+		return true
+	}
+	return hasAdminRole(roles)
+}
+
 func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 	if message.Author.ID == discord.State.User.ID || message.Content == "" {
 		return
@@ -203,7 +211,7 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 	isPrivateChannel := message.GuildID == ""
 
 	if strings.HasPrefix(message.Content, "!bit") || isPrivateChannel {
-		chatbot(discord, message.Author.ID, message.ChannelID, message.Content)
+		chatbot(discord, message.Author.ID, message.ChannelID, message.GuildID, message.Content)
 	}
 
 	if strings.HasPrefix(message.Content, "!roll") {
@@ -300,118 +308,59 @@ func commandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			respondWithMessage(s, i, currentCryptoPrice)
 
 		case "genkey":
-			if hasAdminRole(i.Member.Roles) {
-				err := GenerateAndSaveSSHKeyPairIfNotExist()
-				response := "SSH key pair generated and saved successfully!"
-				if err != nil {
-					response = "Error generating or saving key pair."
-				}
+			if CheckAdmin(i.Member.User.ID, i.Member.Roles) {
+				response, _ := GenerateSSHKeyCore(false)
 				respondWithMessage(s, i, response)
 			} else {
 				respondWithMessage(s, i, "You are not authorized to use this command.")
 			}
 
 		case "showkey":
-			if hasAdminRole(i.Member.Roles) {
-				publicKey, err := GetPublicKey()
-				response := publicKey
-				if err != nil {
-					response = "Error fetching public key."
-				}
+			if CheckAdmin(i.Member.User.ID, i.Member.Roles) {
+				response, _ := ShowSSHPublicKeyCore()
 				respondWithMessage(s, i, response)
 			} else {
 				respondWithMessage(s, i, "You are not authorized to use this command.")
 			}
 
 		case "regenkey":
-			if hasAdminRole(i.Member.Roles) {
-				err := GenerateAndSaveSSHKeyPair()
-				response := "SSH key pair regenerated and saved successfully!"
-				if err != nil {
-					response = "Error regenerating and saving key pair."
-				}
+			if CheckAdmin(i.Member.User.ID, i.Member.Roles) {
+				response, _ := GenerateSSHKeyCore(true)
 				respondWithMessage(s, i, response)
 			} else {
 				respondWithMessage(s, i, "You are not authorized to use this command.")
 			}
 
 		case "ssh":
-			if hasAdminRole(i.Member.Roles) {
+			if CheckAdmin(i.Member.User.ID, i.Member.Roles) {
 				connectionDetails := data.Options[0].StringValue()
-				sshConn, err := SSHConnectToRemoteServer(connectionDetails)
-				response := "Connected to remote server!"
-				if err != nil {
-					response = "Error connecting to remote server."
-				} else {
-					connectionKey := fmt.Sprintf("%s:%s", i.GuildID, i.Member.User.ID)
-					sshConnections[connectionKey] = sshConn
-					serverInfo := &pb.ServerInfo{UserID: i.Member.User.ID, GuildID: i.GuildID, ConnectionDetails: connectionDetails}
-					err = pb.CreateRecord("servers", serverInfo)
-					if err != nil {
-						log.Error(err)
-						response = "Error saving server information."
-					}
-				}
+				response, _ := ConnectSSHServerCore(i.Member.User.ID, i.GuildID, connectionDetails)
 				respondWithMessage(s, i, response)
 			} else {
 				respondWithMessage(s, i, "You are not authorized to use this command.")
 			}
 
 		case "exe":
-			if hasAdminRole(i.Member.Roles) {
-				connectionKey := fmt.Sprintf("%s:%s", i.GuildID, i.Member.User.ID)
-				sshConn, ok := sshConnections[connectionKey]
-				if !ok {
-					respondWithMessage(s, i, "You are not connected to any remote server in this guild. Use /ssh first.")
-					return
-				}
+			if CheckAdmin(i.Member.User.ID, i.Member.Roles) {
 				command := data.Options[0].StringValue()
-				response, err := sshConn.ExecuteCommand(command)
-				if err != nil {
-					response = "Error executing command on remote server."
-				}
+				response, _ := ExecuteSSHCommandCore(i.Member.User.ID, i.GuildID, command)
 				respondWithMessage(s, i, response)
 			} else {
 				respondWithMessage(s, i, "You are not authorized to use this command.")
 			}
 
 		case "exit":
-			if hasAdminRole(i.Member.Roles) {
-				connectionKey := fmt.Sprintf("%s:%s", i.GuildID, i.Member.User.ID)
-				sshConn, ok := sshConnections[connectionKey]
-				if !ok {
-					respondWithMessage(s, i, "You are not connected to any remote server in this guild. Use /ssh first.")
-					return
-				}
-				sshConn.Close()
-				delete(sshConnections, connectionKey)
-				respondWithMessage(s, i, "SSH connection closed.")
+			if CheckAdmin(i.Member.User.ID, i.Member.Roles) {
+				response, _ := CloseSSHConnectionCore(i.Member.User.ID, i.GuildID)
+				respondWithMessage(s, i, response)
 			} else {
 				respondWithMessage(s, i, "You are not authorized to use this command.")
 			}
 
 		case "list":
-			if hasAdminRole(i.Member.Roles) {
-				if i.GuildID == "" {
-					respondWithMessage(s, i, "This command can only be used in a server.")
-					return
-				}
-				servers, err := pb.ListServersByUserIDAndGuildID(i.Member.User.ID, i.GuildID)
-				if err != nil {
-					log.Errorf("Error listing servers for user %s in guild %s: %v", i.Member.User.ID, i.GuildID, err)
-					respondWithMessage(s, i, "Could not retrieve server list. Please try again later.")
-					return
-				}
-				if len(servers) == 0 {
-					respondWithMessage(s, i, "You don't have any saved servers in this guild.")
-					return
-				}
-				var serverListMessage strings.Builder
-				serverListMessage.WriteString("Saved servers in this guild:\n")
-				for _, server := range servers {
-					serverListMessage.WriteString(fmt.Sprintf("- `%s`\n", server.ConnectionDetails))
-				}
-				respondWithMessage(s, i, serverListMessage.String())
+			if CheckAdmin(i.Member.User.ID, i.Member.Roles) {
+				response, _ := ListSSHServersCore(i.Member.User.ID, i.GuildID)
+				respondWithMessage(s, i, response)
 			} else {
 				respondWithMessage(s, i, "You are not authorized to use this command.")
 			}
