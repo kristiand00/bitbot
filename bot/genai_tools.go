@@ -7,6 +7,71 @@ import (
 	"google.golang.org/genai"
 )
 
+// SSHTools defines the tools available to the Gemini model for SSH capabilities.
+var SSHTools = []*genai.Tool{
+	{
+		FunctionDeclarations: []*genai.FunctionDeclaration{
+			{
+				Name:        "generate_ssh_key",
+				Description: "Generates and saves a new SSH key pair. Fails if the user is not an admin.",
+				Parameters: &genai.Schema{
+					Type: genai.TypeObject,
+					Properties: map[string]*genai.Schema{
+						"regenerate": {
+							Type:        genai.TypeBoolean,
+							Description: "If true, overwrites any existing keys. If false, only generates if keys do not already exist.",
+						},
+					},
+					Required: []string{"regenerate"},
+				},
+			},
+			{
+				Name:        "show_ssh_public_key",
+				Description: "Shows the bot's public SSH key so it can be added to a remote server. Fails if the user is not an admin.",
+				Parameters: &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{}},
+			},
+			{
+				Name:        "connect_ssh_server",
+				Description: "Connects to a remote server via SSH. Fails if the user is not an admin.",
+				Parameters: &genai.Schema{
+					Type: genai.TypeObject,
+					Properties: map[string]*genai.Schema{
+						"connection_details": {
+							Type:        genai.TypeString,
+							Description: "Connection details in the format username@remote-host:port",
+						},
+					},
+					Required: []string{"connection_details"},
+				},
+			},
+			{
+				Name:        "execute_ssh_command",
+				Description: "Executes a command on the currently connected SSH server. Fails if the user is not an admin.",
+				Parameters: &genai.Schema{
+					Type: genai.TypeObject,
+					Properties: map[string]*genai.Schema{
+						"command": {
+							Type:        genai.TypeString,
+							Description: "The command to execute on the remote server (e.g., 'ls -la', 'uptime').",
+						},
+					},
+					Required: []string{"command"},
+				},
+			},
+			{
+				Name:        "close_ssh_connection",
+				Description: "Closes the current SSH connection. Fails if the user is not an admin.",
+				Parameters: &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{}},
+			},
+			{
+				Name:        "list_ssh_servers",
+				Description: "Lists saved SSH servers for this guild. Fails if the user is not an admin.",
+				Parameters: &genai.Schema{Type: genai.TypeObject, Properties: map[string]*genai.Schema{}},
+			},
+		},
+	},
+}
+
 // ReminderTools defines the tools available to the Gemini model for reminders.
 var ReminderTools = []*genai.Tool{
 	{
@@ -65,8 +130,20 @@ If a specific time is not supported, offer to set a reminder for the equivalent 
 	},
 }
 
+func authorizeSSH(s *discordgo.Session, guildID, userID string) bool {
+	// Attempt to get the member to check roles if we have a session and guildID
+	if s != nil && guildID != "" {
+		member, err := s.GuildMember(guildID, userID)
+		if err == nil {
+			return CheckAdmin(userID, member.Roles)
+		}
+	}
+	// Fallback to checking just the userID
+	return CheckAdmin(userID, nil)
+}
+
 // HandleFunctionCallWithContext processes a function call from the Gemini model with explicit user/channel context.
-func HandleFunctionCallWithContext(s *discordgo.Session, i *discordgo.InteractionCreate, call *genai.FunctionCall, userID, channelID string) (*genai.Part, error) {
+func HandleFunctionCallWithContext(s *discordgo.Session, i *discordgo.InteractionCreate, call *genai.FunctionCall, userID, channelID, guildID string) (*genai.Part, error) {
 	switch call.Name {
 	case "add_reminder":
 		who, _ := call.Args["who"].(string)
@@ -122,6 +199,69 @@ func HandleFunctionCallWithContext(s *discordgo.Session, i *discordgo.Interactio
 				},
 			},
 		}, nil
+	case "generate_ssh_key":
+		if !authorizeSSH(s, guildID, userID) {
+			return &genai.Part{FunctionResponse: &genai.FunctionResponse{Name: call.Name, Response: map[string]interface{}{"status": "error", "message": "You are not authorized to use SSH commands."}}}, nil
+		}
+		regenerate, _ := call.Args["regenerate"].(bool)
+		resp, err := GenerateSSHKeyCore(regenerate)
+		if err != nil {
+			return &genai.Part{FunctionResponse: &genai.FunctionResponse{Name: call.Name, Response: map[string]interface{}{"status": "error", "message": resp}}}, nil
+		}
+		return &genai.Part{FunctionResponse: &genai.FunctionResponse{Name: call.Name, Response: map[string]interface{}{"status": "success", "message": resp}}}, nil
+
+	case "show_ssh_public_key":
+		if !authorizeSSH(s, guildID, userID) {
+			return &genai.Part{FunctionResponse: &genai.FunctionResponse{Name: call.Name, Response: map[string]interface{}{"status": "error", "message": "You are not authorized to use SSH commands."}}}, nil
+		}
+		resp, err := ShowSSHPublicKeyCore()
+		if err != nil {
+			return &genai.Part{FunctionResponse: &genai.FunctionResponse{Name: call.Name, Response: map[string]interface{}{"status": "error", "message": resp}}}, nil
+		}
+		return &genai.Part{FunctionResponse: &genai.FunctionResponse{Name: call.Name, Response: map[string]interface{}{"status": "success", "message": resp}}}, nil
+
+	case "connect_ssh_server":
+		if !authorizeSSH(s, guildID, userID) {
+			return &genai.Part{FunctionResponse: &genai.FunctionResponse{Name: call.Name, Response: map[string]interface{}{"status": "error", "message": "You are not authorized to use SSH commands."}}}, nil
+		}
+		connectionDetails, _ := call.Args["connection_details"].(string)
+		resp, err := ConnectSSHServerCore(userID, guildID, connectionDetails)
+		if err != nil {
+			return &genai.Part{FunctionResponse: &genai.FunctionResponse{Name: call.Name, Response: map[string]interface{}{"status": "error", "message": resp}}}, nil
+		}
+		return &genai.Part{FunctionResponse: &genai.FunctionResponse{Name: call.Name, Response: map[string]interface{}{"status": "success", "message": resp}}}, nil
+
+	case "execute_ssh_command":
+		if !authorizeSSH(s, guildID, userID) {
+			return &genai.Part{FunctionResponse: &genai.FunctionResponse{Name: call.Name, Response: map[string]interface{}{"status": "error", "message": "You are not authorized to use SSH commands."}}}, nil
+		}
+		command, _ := call.Args["command"].(string)
+		resp, err := ExecuteSSHCommandCore(userID, guildID, command)
+		if err != nil {
+			return &genai.Part{FunctionResponse: &genai.FunctionResponse{Name: call.Name, Response: map[string]interface{}{"status": "error", "message": resp}}}, nil
+		}
+		return &genai.Part{FunctionResponse: &genai.FunctionResponse{Name: call.Name, Response: map[string]interface{}{"status": "success", "message": resp}}}, nil
+
+	case "close_ssh_connection":
+		if !authorizeSSH(s, guildID, userID) {
+			return &genai.Part{FunctionResponse: &genai.FunctionResponse{Name: call.Name, Response: map[string]interface{}{"status": "error", "message": "You are not authorized to use SSH commands."}}}, nil
+		}
+		resp, err := CloseSSHConnectionCore(userID, guildID)
+		if err != nil {
+			return &genai.Part{FunctionResponse: &genai.FunctionResponse{Name: call.Name, Response: map[string]interface{}{"status": "error", "message": resp}}}, nil
+		}
+		return &genai.Part{FunctionResponse: &genai.FunctionResponse{Name: call.Name, Response: map[string]interface{}{"status": "success", "message": resp}}}, nil
+
+	case "list_ssh_servers":
+		if !authorizeSSH(s, guildID, userID) {
+			return &genai.Part{FunctionResponse: &genai.FunctionResponse{Name: call.Name, Response: map[string]interface{}{"status": "error", "message": "You are not authorized to use SSH commands."}}}, nil
+		}
+		resp, err := ListSSHServersCore(userID, guildID)
+		if err != nil {
+			return &genai.Part{FunctionResponse: &genai.FunctionResponse{Name: call.Name, Response: map[string]interface{}{"status": "error", "message": resp}}}, nil
+		}
+		return &genai.Part{FunctionResponse: &genai.FunctionResponse{Name: call.Name, Response: map[string]interface{}{"status": "success", "message": resp}}}, nil
+
 	default:
 		return nil, fmt.Errorf("unknown function call: %s", call.Name)
 	}
