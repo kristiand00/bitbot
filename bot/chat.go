@@ -207,6 +207,11 @@ func chatbot(session *discordgo.Session, userID string, channelID string, guildI
 			Parts: []*genai.Part{genai.NewPartFromText(SystemInstruction)},
 		},
 		Tools: allTools,
+		ToolConfig: &genai.ToolConfig{
+			FunctionCallingConfig: &genai.FunctionCallingConfig{
+				Mode: genai.FunctionCallingConfigModeAuto,
+			},
+		},
 	}
 
 	// Generate content with conversation history
