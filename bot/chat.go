@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +15,8 @@ import (
 const (
 	SystemInstruction = `
 Your name is !bit. You are a helpful assistant that can answer any question, have conversations, and assist users with various tasks. You are also able to use tools to assist users with various tasks.
+
+This is a group chat with multiple people. Each user message is prefixed with the speaker's display name and Discord ID in the format "Name [id:123456789]: message". Use these prefixes to tell who is speaking, to answer questions about who said what, and to identify the current user (the speaker of the most recent message is the person you are replying to). Different prefixes mean different people. Never include this prefix in your own replies — reply in natural language as yourself.
 
 You use brief answers by default, but will elaborate or explain when asked to do so.
 
@@ -36,8 +39,66 @@ After calling a tool, always reply to the user in natural language summarizing t
 If the time has already passed today, set the reminder for tomorrow.`
 )
 
+// channelConversation holds the running history for a single channel plus the
+// locks that keep concurrent Discord events (each dispatched in its own
+// goroutine) from corrupting it.
+//
+//	histMu guards reads/appends to history so concurrent goroutines never race
+//	       on the underlying slice (a plain map/slice race is a fatal runtime
+//	       error and would crash the whole bot).
+//	turnMu serializes AI reply generation per channel, so when several people
+//	       talk to the bot at once their turns are processed one at a time
+//	       instead of interleaving into incoherent replies.
+type channelConversation struct {
+	histMu  sync.Mutex
+	turnMu  sync.Mutex
+	history []Message
+}
+
+// appendUser records an attributed user message. Used for both messages
+// addressed to the bot and passively observed channel chatter, so the model
+// has full context on who said what.
+func (c *channelConversation) appendUser(userID, displayName, content string) {
+	if displayName == "" {
+		displayName = "Unknown"
+	}
+	attributed := fmt.Sprintf("%s [id:%s]: %s", displayName, userID, content)
+	c.histMu.Lock()
+	defer c.histMu.Unlock()
+	c.history = append(c.history, Message{Role: "user", Content: attributed})
+	c.history = trimHistory(c.history)
+}
+
+// snapshot returns a copy of the current history prefixed with the system
+// message, safe to hand to the API without holding the lock during the call.
+func (c *channelConversation) snapshot() []Message {
+	c.histMu.Lock()
+	defer c.histMu.Unlock()
+	msgs := make([]Message, 0, len(c.history)+1)
+	msgs = append(msgs, Message{Role: "system", Content: SystemInstruction})
+	msgs = append(msgs, c.history...)
+	return msgs
+}
+
+// appendAssistant records the model's messages (assistant replies and the
+// assistant/tool message pairs from a tool round) atomically.
+func (c *channelConversation) appendAssistant(msgs ...Message) {
+	c.histMu.Lock()
+	defer c.histMu.Unlock()
+	c.history = append(c.history, msgs...)
+	c.history = trimHistory(c.history)
+}
+
 var (
-	conversationHistory = make(map[string][]Message) // Store conversation history per channel
+	// conversations maps channelID -> its conversation state. conversationsMu
+	// guards the map itself (creation/lookup); per-channel data is guarded by
+	// the locks inside channelConversation.
+	conversations   = make(map[string]*channelConversation)
+	conversationsMu sync.Mutex
+
+	// maxHistoryMessages caps how many stored messages we keep per channel so the
+	// in-memory history (and each request payload) does not grow unbounded.
+	maxHistoryMessages = 40
 
 	// Rate limiting
 	requestCount         int
@@ -46,6 +107,18 @@ var (
 	rateLimitWindow      = 60 * time.Second // 1 minute window
 	maxRequestsPerMinute = 50               // Conservative limit to stay under the 60/minute free tier limit
 )
+
+// getConversation returns (creating if needed) the conversation state for a channel.
+func getConversation(channelID string) *channelConversation {
+	conversationsMu.Lock()
+	defer conversationsMu.Unlock()
+	c := conversations[channelID]
+	if c == nil {
+		c = &channelConversation{}
+		conversations[channelID] = c
+	}
+	return c
+}
 
 // InitRegoloClient initializes the Regolo (OpenAI-compatible) client, delegating
 // to the client in regolo.go while keeping the startup logging/timing.
@@ -101,7 +174,35 @@ func handleAIError(err error, session *discordgo.Session, channelID string) {
 	}
 }
 
-func chatbot(session *discordgo.Session, userID string, channelID string, guildID string, userMessageContent string) {
+// trimHistory caps history to the most recent maxHistoryMessages entries while
+// keeping tool-call pairing valid: the OpenAI-compatible API rejects a leading
+// role:"tool" message that no longer follows the assistant tool_calls that
+// produced it, so drop any orphaned leading tool messages after truncation.
+func trimHistory(history []Message) []Message {
+	if len(history) > maxHistoryMessages {
+		history = history[len(history)-maxHistoryMessages:]
+	}
+	for len(history) > 0 && history[0].Role == "tool" {
+		history = history[1:]
+	}
+	return history
+}
+
+// recordMessage stores an attributed user message in the channel's history
+// without generating a reply. Used for passive listening so the bot has context
+// on messages that were not addressed to it.
+func recordMessage(channelID, userID, displayName, content string) {
+	if content == "" {
+		return
+	}
+	getConversation(channelID).appendUser(userID, displayName, content)
+}
+
+// chatbot generates and sends the bot's reply for a channel. The triggering
+// user message must already have been recorded via recordMessage. The whole
+// turn is serialized per channel (turnMu) so simultaneous requests from
+// different users don't interleave.
+func chatbot(session *discordgo.Session, userID string, channelID string, guildID string) {
 	if regoloAPIKey == "" {
 		log.Error("Regolo client is not initialized.")
 		_, _ = session.ChannelMessageSend(channelID, "Sorry, the chat service is not properly configured.")
@@ -114,23 +215,15 @@ func chatbot(session *discordgo.Session, userID string, channelID string, guildI
 	}
 
 	ctx := context.Background()
+	conv := getConversation(channelID)
 
-	if userMessageContent == "" {
-		log.Info("User message content is empty. Nothing to send to AI.")
-		return
-	}
+	// Only one AI turn per channel at a time. Other users' triggers wait here;
+	// their messages are already in history via recordMessage, so this turn sees
+	// them and later turns see this turn's exchange.
+	conv.turnMu.Lock()
+	defer conv.turnMu.Unlock()
 
 	_ = session.ChannelTyping(channelID)
-
-	log.Infof("Sending user message to AI: '%s'", userMessageContent)
-
-	// Get or initialize conversation history for this channel.
-	// History stores only user/assistant/tool messages; the system message is
-	// prepended to each request but never stored.
-	history := conversationHistory[channelID]
-
-	// Add user message to history
-	history = append(history, Message{Role: "user", Content: userMessageContent})
 
 	// Combine tools
 	allTools := append(ReminderTools, SSHTools...)
@@ -144,11 +237,10 @@ func chatbot(session *discordgo.Session, userID string, channelID string, guildI
 		// user message cannot fire many API calls without a cap.
 		if i > 0 && !checkRateLimit() {
 			_, _ = session.ChannelMessageSend(channelID, "I'm currently experiencing high demand. Please try again in a minute.")
-			conversationHistory[channelID] = history
 			return
 		}
 
-		messages := append([]Message{{Role: "system", Content: SystemInstruction}}, history...)
+		messages := conv.snapshot()
 
 		resp, err := RegoloChat(ctx, messages, allTools)
 		if err != nil {
@@ -160,27 +252,29 @@ func chatbot(session *discordgo.Session, userID string, channelID string, guildI
 		message := resp.Choices[0].Message
 
 		if len(message.ToolCalls) > 0 {
-			// Append the assistant message (with its tool_calls) to history.
-			history = append(history, message)
+			// Append the assistant message and its tool results together so the
+			// tool_calls/tool pairing stays contiguous in history.
+			toolMsgs := []Message{message}
 
 			for _, tc := range message.ToolCalls {
 				log.Infof("Handling function call: %s", tc.Function.Name)
 				result, err := HandleFunctionCallWithContext(session, nil, &tc, userID, channelID, guildID)
 				if err != nil {
 					log.Errorf("Error handling function call: %v", err)
+					conv.appendAssistant(toolMsgs...)
 					handleAIError(err, session, channelID)
 					return
 				}
 				log.Infof("Function call '%s' result: %s", tc.Function.Name, result)
 
-				history = append(history, Message{
+				toolMsgs = append(toolMsgs, Message{
 					Role:       "tool",
 					ToolCallID: tc.ID,
 					Name:       tc.Function.Name,
 					Content:    result,
 				})
 			}
-			conversationHistory[channelID] = history
+			conv.appendAssistant(toolMsgs...)
 			// Loop again so the model can turn the tool results into a reply.
 			continue
 		}
@@ -196,13 +290,11 @@ func chatbot(session *discordgo.Session, userID string, channelID string, guildI
 		if err != nil {
 			log.Errorf("Error sending message to Discord: %v", err)
 		}
-		history = append(history, message)
-		conversationHistory[channelID] = history
+		conv.appendAssistant(message)
 		return
 	}
 
 	// The loop hit maxToolRounds without the model producing a final reply.
 	log.Warnf("Tool-handling loop reached max rounds (%d) without a final reply", maxToolRounds)
-	conversationHistory[channelID] = history
 	_, _ = session.ChannelMessageSend(channelID, "Sorry, I couldn't complete that request. Please try rephrasing or try again later.")
 }

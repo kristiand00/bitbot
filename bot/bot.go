@@ -183,8 +183,6 @@ func Run() {
 	<-c
 }
 
-var conversationHistoryMap = make(map[string][]map[string]interface{})
-
 // sshConnections stores SSH connection details, keyed by "guildID:userID"
 var sshConnections = make(map[string]*SSHConnection)
 
@@ -211,8 +209,13 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 	}
 	isPrivateChannel := message.GuildID == ""
 
+	// Passive listening: record every human message (attributed to its speaker)
+	// so the bot has full channel context and can answer "who said what" even for
+	// messages that were not addressed to it.
+	recordMessage(message.ChannelID, message.Author.ID, resolveDisplayName(message), message.Content)
+
 	if strings.HasPrefix(message.Content, "!bit") || isPrivateChannel {
-		chatbot(discord, message.Author.ID, message.ChannelID, message.GuildID, message.Content)
+		chatbot(discord, message.Author.ID, message.ChannelID, message.GuildID)
 	}
 
 	if strings.HasPrefix(message.Content, "!roll") {
@@ -228,6 +231,22 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 		discord.ChannelMessageSend(message.ChannelID, response)
 		return
 	}
+}
+
+// resolveDisplayName returns the best human-readable name for the message
+// author: the per-guild nickname if set, otherwise the account display name,
+// falling back to the username.
+func resolveDisplayName(message *discordgo.MessageCreate) string {
+	if message.Member != nil && message.Member.Nick != "" {
+		return message.Member.Nick
+	}
+	if message.Author != nil && message.Author.GlobalName != "" {
+		return message.Author.GlobalName
+	}
+	if message.Author != nil {
+		return message.Author.Username
+	}
+	return "Unknown"
 }
 
 func registerCommands(discord *discordgo.Session, appID string) {
