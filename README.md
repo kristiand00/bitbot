@@ -1,33 +1,125 @@
-# BitBot Project
+# BitBot
 
-A Discord bot with various functionalities, including voice interaction using AI.
+A Discord bot written in Go that pairs a conversational AI assistant with practical server tooling. It uses [Regolo.ai](https://regolo.ai) (an OpenAI-compatible, green AI platform) for chat and tool-calling, and embeds [PocketBase](https://pocketbase.io) for storage and an admin dashboard.
 
-## Local Development and Build Dependencies
+Talk to it in natural language and it can look up crypto prices, manage reminders, and — for authorized admins — generate SSH keys and run commands on remote servers, all through AI tool-calling. Slash commands are available for the same features.
 
-To build and run this bot locally, you'll need Go and some system dependencies, especially for the voice features.
+## Features
 
-### Go Version
+- **AI chat** — Mention the bot or DM it and it replies using a Regolo model (defaults to `gpt-oss-120b`). The model can call tools to actually perform actions, not just describe them.
+- **Cryptocurrency prices** — `/cry` fetches live prices via [CryptoCompare](https://min-api.cryptocompare.com).
+- **Reminders** — Add, list, and delete reminders in natural language (`/remind add`, `/remind list`, `/remind delete`).
+- **SSH management** (admin only) — Generate/rotate an SSH key pair, connect to remote servers, execute commands, list saved servers, and disconnect — via slash commands or by asking the AI.
+- **Event organizer** — `/createevent` opens a modal to organize an Ava dungeon raid event.
+- **Help** — `/help` lists available commands by category.
+- **PocketBase backend** — Saved servers, reminders, and users are stored in an embedded PocketBase instance with a web admin UI.
 
-*   Go 1.21 or newer is recommended. Please refer to the `go.mod` file for the specific version used in this project.
+## Slash commands
 
-### System Dependencies for Voice Features
+| Command | Description |
+| --- | --- |
+| `/cry` | Get cryptocurrency price information |
+| `/remind add\|list\|delete` | Manage reminders |
+| `/genkey` | Generate and save an SSH key pair *(admin)* |
+| `/regenkey` | Regenerate the SSH key pair *(admin)* |
+| `/showkey` | Show the public SSH key *(admin)* |
+| `/ssh` | Connect to a server via SSH *(admin)* |
+| `/exe` | Execute a command on the connected server *(admin)* |
+| `/exit` | Close the SSH connection *(admin)* |
+| `/list` | List saved servers *(admin)* |
+| `/createevent` | Organize an Ava dungeon raid event |
+| `/help` | List available commands by category |
 
-The voice features rely on libraries that require CGo and have system-level dependencies.
+The same SSH and reminder actions are also exposed to the AI as callable tools, so you can just ask the bot in plain language.
 
-#### Debian/Ubuntu-based Systems
+## AI backend (Regolo.ai)
 
-Install the following packages:
-`sudo apt-get update && sudo apt-get install libopus-dev libsoxr-dev pkg-config`
+BitBot calls Regolo's OpenAI-compatible chat completions endpoint at `https://api.regolo.ai/v1/chat/completions`. Because the API is OpenAI-compatible, standard chat, tools, and streaming semantics apply.
 
-Runtime libraries (`libopus0`, `libsoxr0`) are typically installed as dependencies of the `-dev` packages.
+- **API reference:** https://docs.api.regolo.ai/regolo-api.json
+- **Default model:** `gpt-oss-120b` (override with `REGOLO_MODEL`)
+- Beyond chat, the Regolo API also offers models listing, embeddings, image generation, text-to-speech / transcription, reranking, and assistants — see the reference above.
 
-#### Alpine Linux
+Get an API key from your Regolo.ai account and set it via `REGOLO_API_KEY`.
 
-For reference (as used in the Dockerfile), the equivalent packages are:
-*   Build-time: `apk add --no-cache gcc musl-dev opus-dev sox-dev pkgconfig`
-*   Run-time: `apk add --no-cache opus sox`
+## Configuration
 
-#### Build Command
+Configuration is read from environment variables (loaded from a `.env` file in non-production environments). Copy `.env_example` to `.env` and fill in the values:
 
-You may need to build with CGo enabled:
-`CGO_ENABLED=1 go build .`
+| Variable | Required | Description |
+| --- | --- | --- |
+| `BOT_TOKEN` | yes | Discord bot token |
+| `APP_ID` | yes | Discord application ID |
+| `ADMIN_DISCORD_ID` | yes | Discord user ID allowed to use admin/SSH features |
+| `REGOLO_API_KEY` | yes | Regolo.ai API key |
+| `CRYPTO_TOKEN` | yes | CryptoCompare API key |
+| `REGOLO_MODEL` | no | Regolo model name (defaults to `gpt-oss-120b`) |
+| `ENV` | no | Set to `production` to skip loading `.env` |
+
+## Getting started
+
+### Prerequisites
+
+- Go 1.21+ (see `go.mod` for the exact version)
+- A Discord application with a bot token ([Discord Developer Portal](https://discord.com/developers/applications))
+- A Regolo.ai API key and a CryptoCompare API key
+
+### Run locally
+
+```bash
+git clone https://github.com/kristiand00/bitbot.git
+cd bitbot
+cp .env_example .env   # then fill in your tokens
+go mod download
+go run .
+```
+
+### Run modes
+
+BitBot has three run modes, selected by the first argument:
+
+```bash
+go run .                  # bot only
+go run . serve            # PocketBase admin UI only (http://localhost:8090/_/)
+go run . serve-with-bot   # bot + PocketBase admin UI together
+```
+
+The PocketBase admin UI is served on `0.0.0.0:8090` at `/_/`.
+
+## Docker
+
+The included `Dockerfile` builds a small Alpine image and runs `serve-with-bot` (bot + PocketBase) by default, exposing the admin UI on port `8090`.
+
+```bash
+docker build -t bitbot .
+docker run --rm \
+  --env-file .env \
+  -p 8090:8090 \
+  -v bitbot_pbdata:/app/pb_data \
+  bitbot
+```
+
+PocketBase data is persisted in the `/app/pb_data` volume. The image is pinned to the `Europe/Zagreb` timezone; adjust the `TZ` and timezone lines in the `Dockerfile` if you need a different one.
+
+## Project layout
+
+```
+main.go              Entry point and run-mode selection
+bot/                 Discord bot: commands, AI chat, tools
+  bot.go             Command registration and interaction routing
+  chat.go            AI chat loop and tool-call handling
+  regolo.go          Regolo.ai (OpenAI-compatible) client
+  genai_tools.go     Tool definitions exposed to the model
+  command-crypto.go  Cryptocurrency price command
+  reminder.go        Reminder feature
+  sshclient.go       SSH commands
+  ssh_core.go        SSH connection logic
+pb/                  Embedded PocketBase setup
+pb_data/             PocketBase data (gitignored)
+spike/               Experiments and prototypes
+```
+
+## Notes
+
+- `pb_data/` (the PocketBase database) is intentionally gitignored — do not commit it, as it may contain credentials and runtime data.
+- SSH and other admin actions are restricted to the Discord user set in `ADMIN_DISCORD_ID`.
