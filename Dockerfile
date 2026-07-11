@@ -1,5 +1,5 @@
 # --- Builder Stage ---
-FROM golang:1.24.1-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 ENV GOOS=linux
 ENV GOARCH=amd64

@@ -1,22 +1,27 @@
 package pb
 
 import (
-	"fmt"
-	"sync" // fmt was removed as it was unused in the last good version
-
+	"database/sql"
 	"encoding/json" // For unmarshalling target_user_ids fallback
-	// Added for error handling
-	"strings" // For error checking in DeleteReminder
-	"time"    // Added for reminder timestamps
+	"errors"
+	"fmt"
+	"reflect"
+	"sync"
+	"time" // Added for reminder timestamps
 
 	"github.com/charmbracelet/log"
 	"github.com/pocketbase/dbx"
-
-	"reflect"
-
 	"github.com/pocketbase/pocketbase"
-	"github.com/pocketbase/pocketbase/core" // Changed from models
+	"github.com/pocketbase/pocketbase/core"
 )
+
+// isNotFound reports whether err is PocketBase's "record not found" error.
+// The record lookup helpers (FindRecordById, FindFirstRecordByFilter) return
+// sql.ErrNoRows when nothing matches, so match on that sentinel rather than on
+// the error text, which is brittle across versions.
+func isNotFound(err error) bool {
+	return errors.Is(err, sql.ErrNoRows)
+}
 
 var (
 	appOnce sync.Once
@@ -373,9 +378,8 @@ func GetDueReminders() ([]*Reminder, error) {
 		params,
 	)
 	if err != nil {
-		// If the error is that no records were found, it's not a real error in this context.
-		// We can return an empty slice and no error.
-		if strings.Contains(err.Error(), "no rows in result set") { // This is a common way to check for this specific error
+		// A "no records found" result is not a real error in this context.
+		if isNotFound(err) {
 			return []*Reminder{}, nil
 		}
 		log.Error("Error fetching due reminders", "error", err)
@@ -429,16 +433,12 @@ func DeleteReminder(reminderID string) error {
 	currentApp := GetApp()
 	record, err := currentApp.FindRecordById(remindersCollection, reminderID)
 	if err != nil {
-		log.Error("Error finding reminder to delete", "recordID", reminderID, "error", err)
-		// If it's already deleted or not found, we can consider it a success for this operation's intent.
-		// Check for common "not found" error patterns
-		errStr := err.Error()
-		if strings.Contains(errStr, "Failed to find record") ||
-			strings.Contains(errStr, "no rows in result set") ||
-			strings.Contains(errStr, "record not found") {
+		// If it's already deleted or not found, treat it as success for this operation's intent.
+		if isNotFound(err) {
 			log.Warn("Reminder not found, possibly already deleted.", "recordID", reminderID)
 			return nil
 		}
+		log.Error("Error finding reminder to delete", "recordID", reminderID, "error", err)
 		return err
 	}
 
@@ -462,7 +462,7 @@ func ListRemindersByUser(userID string) ([]*Reminder, error) {
 		dbx.Params{"userID": userID},
 	)
 	if err != nil {
-		if strings.Contains(err.Error(), "no rows in result set") {
+		if isNotFound(err) {
 			return []*Reminder{}, nil
 		}
 		log.Error("Error listing reminders by user", "userID", userID, "error", err)
