@@ -246,7 +246,7 @@ func handleDeleteReminder(s *discordgo.Session, i *discordgo.InteractionCreate) 
 	respondWithMessage(s, i, "Reminder deleted successfully.")
 }
 
-// --- Context-free Reminder Logic for Gemini and Discord ---
+// --- Context-free Reminder Logic for the LLM and Discord ---
 
 // AddReminderCore adds a reminder for a user, given user/channel context and arguments.
 func AddReminderCore(userID, channelID, whoArg, whenArg, messageArg string) (string, error) {
@@ -304,7 +304,7 @@ func AddReminderCore(userID, channelID, whoArg, whenArg, messageArg string) (str
 		TargetUserIDs:    targetUserIDs,
 		Message:          messageArg,
 		ChannelID:        channelID,
-		GuildID:          "", // Not used for Gemini
+		GuildID:          "", // Not used for the LLM path
 		ReminderTime:     reminderTime,
 		IsRecurring:      isRecurring,
 		RecurrenceRule:   recurrenceRule,

@@ -2,19 +2,16 @@ package bot
 
 import (
 	"context"
-	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/charmbracelet/log"
-	"google.golang.org/genai"
 )
 
 // Model name constants
 const (
-	AudioModelName    = "gemini-2.5-flash"
-	TextModelName     = "gemini-2.5-flash"
 	SystemInstruction = `
 Your name is !bit. You are a helpful assistant that can answer any question, have conversations, and assist users with various tasks. You are also able to use tools to assist users with various tasks.
 
@@ -32,7 +29,7 @@ If a user requests a reminder for a specific date/time and it is not supported, 
 
 You also have the capability to manage SSH connections and execute commands on remote servers using the SSH tools provided. To execute commands, you must first connect to a server. You can also generate and show SSH keys. Note that only authorized users (admins) can use SSH tools. If an SSH tool fails due to lack of authorization, politely inform the user.
 
-If a tool returns an error message (as plain text), immediately reply to the user with that error and do not call the tool again unless the user asks for another attempt.
+A tool result is returned as JSON with a "status" field ("success" or "error") and a "message" field. If status is "error", immediately reply to the user with the message and do not call the tool again unless the user asks for another attempt.
 
 After calling a tool, always reply to the user in natural language summarizing the result.
 
@@ -40,8 +37,7 @@ If the time has already passed today, set the reminder for tomorrow.`
 )
 
 var (
-	geminiClient        *genai.Client
-	conversationHistory = make(map[string][]*genai.Content) // Store conversation history per channel
+	conversationHistory = make(map[string][]Message) // Store conversation history per channel
 
 	// Rate limiting
 	requestCount         int
@@ -51,76 +47,19 @@ var (
 	maxRequestsPerMinute = 50               // Conservative limit to stay under the 60/minute free tier limit
 )
 
-// AudioRequest represents the request body for the Gemini API
-type AudioRequest struct {
-	Contents []struct {
-		Parts []struct {
-			Text       string `json:"text,omitempty"`
-			InlineData *struct {
-				MimeType string `json:"mimeType"`
-				Data     string `json:"data"`
-			} `json:"inlineData,omitempty"`
-		} `json:"parts"`
-	} `json:"contents"`
-}
-
-// LiveConfig represents the configuration for the Live API
-type LiveConfig struct {
-	ModelName         string `json:"modelName"`
-	ProactivityConfig struct {
-		ProactiveAudio bool `json:"proactiveAudio"`
-	} `json:"proactivityConfig"`
-	AffectiveDialogConfig struct {
-		EnableAffectiveDialog bool `json:"enableAffectiveDialog"`
-	} `json:"affectiveDialogConfig"`
-}
-
-func InitGeminiClient(apiKey string) error {
+// InitRegoloClient initializes the Regolo (OpenAI-compatible) client, delegating
+// to the client in regolo.go while keeping the startup logging/timing.
+func InitRegoloClient(apiKey, model string) error {
 	startTime := time.Now()
-	log.Infof("Starting Gemini client initialization at %v", startTime)
+	log.Infof("Starting Regolo client initialization at %v", startTime)
 
-	if apiKey == "" {
-		return fmt.Errorf("gemini API key is not provided")
+	if err := initRegoloClient(apiKey, model); err != nil {
+		log.Errorf("Failed to initialize Regolo client: %v", err)
+		return err
 	}
 
-	ctx := context.Background()
-	log.Info("Creating new Gemini client...")
-	// Pass API key via ClientConfig
-	// If nil is passed instead, client would read from GEMINI_API_KEY environment variable
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		APIKey: apiKey,
-	})
-	if err != nil {
-		log.Errorf("Failed to create Generative Client: %v", err)
-		return fmt.Errorf("failed to create Generative Client: %w", err)
-	}
-	log.Infof("Gemini client created successfully after %v", time.Since(startTime))
-
-	geminiClient = client
 	lastRequestTime = time.Now()
-
-	// Test the text model availability only
-	log.Info("Starting model availability tests...")
-	if err := testTextModelAvailability(ctx); err != nil {
-		log.Warnf("Failed to test text model availability: %v", err)
-	}
-
-	log.Infof("GenAI Client initialization completed in %v", time.Since(startTime))
-	return nil
-}
-
-// Only test text model availability
-func testTextModelAvailability(ctx context.Context) error {
-	startTime := time.Now()
-
-	log.Info("Testing text model availability...")
-
-	// Test text model with a simple prompt using genai.Text helper
-	_, err := geminiClient.Models.GenerateContent(ctx, TextModelName, genai.Text("test"), nil)
-	if err != nil {
-		return fmt.Errorf("text model %s is not available: %v", TextModelName, err)
-	}
-	log.Infof("Text model %s is available (test took %v)", TextModelName, time.Since(startTime))
+	log.Infof("Regolo client initialization completed in %v (model=%s)", time.Since(startTime), regoloModel)
 	return nil
 }
 
@@ -147,24 +86,24 @@ func checkRateLimit() bool {
 	return true
 }
 
-func handleGeminiError(err error, session *discordgo.Session, channelID string) {
+func handleAIError(err error, session *discordgo.Session, channelID string) {
 	if err == nil {
 		return
 	}
 
 	errMsg := err.Error()
-	if errMsg == "RESOURCE_EXHAUSTED" || errMsg == "429" {
-		log.Warn("Rate limit exceeded for Gemini API")
+	if strings.Contains(errMsg, "RESOURCE_EXHAUSTED") || strings.Contains(errMsg, "429") {
+		log.Warn("Rate limit exceeded for AI API")
 		_, _ = session.ChannelMessageSend(channelID, "I'm currently experiencing high demand. Please try again in a minute.")
 	} else {
-		log.Errorf("Gemini API error: %v", err)
+		log.Errorf("AI API error: %v", err)
 		_, _ = session.ChannelMessageSend(channelID, "Sorry, I encountered an error while processing your request. Please try again later.")
 	}
 }
 
 func chatbot(session *discordgo.Session, userID string, channelID string, guildID string, userMessageContent string) {
-	if geminiClient == nil {
-		log.Error("Gemini client is not initialized.")
+	if regoloAPIKey == "" {
+		log.Error("Regolo client is not initialized.")
 		_, _ = session.ChannelMessageSend(channelID, "Sorry, the chat service is not properly configured.")
 		return
 	}
@@ -185,107 +124,85 @@ func chatbot(session *discordgo.Session, userID string, channelID string, guildI
 
 	log.Infof("Sending user message to AI: '%s'", userMessageContent)
 
-	// Get or initialize conversation history for this channel
-	history, exists := conversationHistory[channelID]
-	if !exists {
-		history = []*genai.Content{}
-	}
+	// Get or initialize conversation history for this channel.
+	// History stores only user/assistant/tool messages; the system message is
+	// prepended to each request but never stored.
+	history := conversationHistory[channelID]
 
 	// Add user message to history
-	userMessage := &genai.Content{
-		Parts: []*genai.Part{genai.NewPartFromText(userMessageContent)},
-		Role:  genai.RoleUser,
-	}
-	history = append(history, userMessage)
+	history = append(history, Message{Role: "user", Content: userMessageContent})
 
 	// Combine tools
 	allTools := append(ReminderTools, SSHTools...)
 
-	// Prepare config with system instruction and tools
-	config := &genai.GenerateContentConfig{
-		SystemInstruction: &genai.Content{
-			Parts: []*genai.Part{genai.NewPartFromText(SystemInstruction)},
-		},
-		Tools: allTools,
-		ToolConfig: &genai.ToolConfig{
-			FunctionCallingConfig: &genai.FunctionCallingConfig{
-				Mode: genai.FunctionCallingConfigModeAuto,
-			},
-		},
-	}
-
-	// Generate content with conversation history
-	resp, err := geminiClient.Models.GenerateContent(ctx, TextModelName, history, config)
-	if err != nil {
-		log.Errorf("Error getting response from AI: %v", err)
-		handleGeminiError(err, session, channelID)
-		return
-	}
-
-	// Robust function call handling loop
-	for {
-		respText := resp.Text()
-		if respText != "" {
-			// Got a text reply, send to user
-			_, err = session.ChannelMessageSend(channelID, respText)
-			if err != nil {
-				log.Errorf("Error sending message to Discord: %v", err)
-			}
-			// Add assistant response to history and save
-			assistantMessage := &genai.Content{
-				Parts: []*genai.Part{genai.NewPartFromText(respText)},
-				Role:  genai.RoleModel,
-			}
-			history = append(history, assistantMessage)
+	// Robust function call handling loop with a bounded number of tool rounds so
+	// a model that keeps emitting tool_calls cannot spin forever (unbounded API
+	// calls, permanent 'typing' state, runaway cost).
+	const maxToolRounds = 6
+	for i := 0; i < maxToolRounds; i++ {
+		// Respect the rate window on every round, not just at entry, so a single
+		// user message cannot fire many API calls without a cap.
+		if i > 0 && !checkRateLimit() {
+			_, _ = session.ChannelMessageSend(channelID, "I'm currently experiencing high demand. Please try again in a minute.")
 			conversationHistory[channelID] = history
 			return
 		}
 
-		// Check for function call
-		var fc *genai.FunctionCall
-		if len(resp.Candidates) > 0 && len(resp.Candidates[0].Content.Parts) > 0 {
-			fc = resp.Candidates[0].Content.Parts[0].FunctionCall
-		}
-		if fc == nil {
-			log.Error("No text or function call in response")
-			_, _ = session.ChannelMessageSend(channelID, "Sorry, I received an empty response from the AI service.")
-			return
-		}
-		log.Infof("Handling function call: %s", fc.Name)
+		messages := append([]Message{{Role: "system", Content: SystemInstruction}}, history...)
 
-		// Add function call to history
-		functionCallContent := &genai.Content{
-			Parts: []*genai.Part{
-				{
-					FunctionCall: fc,
-				},
-			},
-			Role: genai.RoleModel,
-		}
-		history = append(history, functionCallContent)
-
-		// Handle the function call
-		part, err := HandleFunctionCallWithContext(session, nil, fc, userID, channelID, guildID)
+		resp, err := RegoloChat(ctx, messages, allTools)
 		if err != nil {
-			log.Errorf("Error handling function call: %v", err)
-			handleGeminiError(err, session, channelID)
+			log.Errorf("Error getting response from AI: %v", err)
+			handleAIError(err, session, channelID)
 			return
 		}
-		log.Infof("Function call '%s' result: %+v", fc.Name, part)
 
-		// Add function response to history
-		functionResponseContent := &genai.Content{
-			Parts: []*genai.Part{part},
-			Role:  genai.RoleUser,
+		message := resp.Choices[0].Message
+
+		if len(message.ToolCalls) > 0 {
+			// Append the assistant message (with its tool_calls) to history.
+			history = append(history, message)
+
+			for _, tc := range message.ToolCalls {
+				log.Infof("Handling function call: %s", tc.Function.Name)
+				result, err := HandleFunctionCallWithContext(session, nil, &tc, userID, channelID, guildID)
+				if err != nil {
+					log.Errorf("Error handling function call: %v", err)
+					handleAIError(err, session, channelID)
+					return
+				}
+				log.Infof("Function call '%s' result: %s", tc.Function.Name, result)
+
+				history = append(history, Message{
+					Role:       "tool",
+					ToolCallID: tc.ID,
+					Name:       tc.Function.Name,
+					Content:    result,
+				})
+			}
+			conversationHistory[channelID] = history
+			// Loop again so the model can turn the tool results into a reply.
+			continue
 		}
-		history = append(history, functionResponseContent)
 
-		// Generate content again with updated history
-		resp, err = geminiClient.Models.GenerateContent(ctx, TextModelName, history, config)
+		// No tool calls: send the assistant reply to Discord. Guard against an
+		// empty/whitespace-only body (e.g. finish_reason length/content_filter),
+		// which Discord's API rejects, leaving the user with no reply.
+		reply := message.Content
+		if strings.TrimSpace(reply) == "" {
+			reply = "Sorry, I couldn't generate a response. Please try again."
+		}
+		_, err = session.ChannelMessageSend(channelID, reply)
 		if err != nil {
-			log.Errorf("Error sending function response to AI: %v", err)
-			handleGeminiError(err, session, channelID)
-			return
+			log.Errorf("Error sending message to Discord: %v", err)
 		}
+		history = append(history, message)
+		conversationHistory[channelID] = history
+		return
 	}
+
+	// The loop hit maxToolRounds without the model producing a final reply.
+	log.Warnf("Tool-handling loop reached max rounds (%d) without a final reply", maxToolRounds)
+	conversationHistory[channelID] = history
+	_, _ = session.ChannelMessageSend(channelID, "Sorry, I couldn't complete that request. Please try rephrasing or try again later.")
 }

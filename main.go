@@ -51,10 +51,11 @@ func main() {
 		if !ok {
 			log.Fatal("Must set appId as env variable: APP_ID")
 		}
-		geminiAPIKey, ok := os.LookupEnv("GEMINI_API_KEY")
+		regoloAPIKey, ok := os.LookupEnv("REGOLO_API_KEY")
 		if !ok {
-			log.Fatal("Must set Gemini API key as env variable: GEMINI_API_KEY")
+			log.Fatal("Must set Regolo API key as env variable: REGOLO_API_KEY")
 		}
+		regoloModel := os.Getenv("REGOLO_MODEL") // Optional; empty defaults in the client
 		AllowedUserID, ok := os.LookupEnv("ADMIN_DISCORD_ID")
 		if !ok {
 			log.Fatal("Must set OpenAI token as env variable: ADMIN_DISCORD_ID")
@@ -63,7 +64,8 @@ func main() {
 		bot.BotToken = botToken
 		bot.CryptoToken = cryptoToken
 		bot.AppId = appId
-		bot.GeminiAPIKey = geminiAPIKey
+		bot.RegoloAPIKey = regoloAPIKey
+		bot.RegoloModel = regoloModel
 		bot.AllowedUserID = AllowedUserID
 
 		// Start the bot in a goroutine
@@ -99,10 +101,11 @@ func main() {
 	if !ok {
 		log.Fatal("Must set appId as env variable: APP_ID")
 	}
-	geminiAPIKey, ok := os.LookupEnv("GEMINI_API_KEY")
+	regoloAPIKey, ok := os.LookupEnv("REGOLO_API_KEY")
 	if !ok {
-		log.Fatal("Must set Gemini API key as env variable: GEMINI_API_KEY")
+		log.Fatal("Must set Regolo API key as env variable: REGOLO_API_KEY")
 	}
+	regoloModel := os.Getenv("REGOLO_MODEL") // Optional; empty defaults in the client
 	AllowedUserID, ok := os.LookupEnv("ADMIN_DISCORD_ID")
 	if !ok {
 		log.Fatal("Must set OpenAI token as env variable: ADMIN_DISCORD_ID")
@@ -111,7 +114,8 @@ func main() {
 	bot.BotToken = botToken
 	bot.CryptoToken = cryptoToken
 	bot.AppId = appId
-	bot.GeminiAPIKey = geminiAPIKey
+	bot.RegoloAPIKey = regoloAPIKey
+	bot.RegoloModel = regoloModel
 	bot.AllowedUserID = AllowedUserID
 
 	// Setup signal handling for graceful shutdown

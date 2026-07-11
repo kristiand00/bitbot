@@ -19,7 +19,8 @@ import (
 var (
 	// BotToken is injected at build time or via env
 	BotToken      string
-	GeminiAPIKey  string // This is already used by chat.go's InitGeminiClient
+	RegoloAPIKey  string // Used by chat.go's InitRegoloClient
+	RegoloModel   string // Optional; empty defaults to gpt-oss-120b
 	CryptoToken   string
 	AllowedUserID string
 	AppId         string
@@ -148,14 +149,14 @@ func Run() {
 	pb.Init()
 	log.Info("PocketBase initialized successfully.")
 
-	if GeminiAPIKey == "" {
-		log.Fatal("Gemini API Key (GEMINI_API_KEY) is not set in environment variables.")
+	if RegoloAPIKey == "" {
+		log.Fatal("Regolo API Key (REGOLO_API_KEY) is not set in environment variables.")
 	}
-	log.Info("Initializing Gemini Client...")
-	if err := InitGeminiClient(GeminiAPIKey); err != nil {
-		log.Fatalf("Failed to initialize Gemini Client: %v", err)
+	log.Info("Initializing Regolo Client...")
+	if err := InitRegoloClient(RegoloAPIKey, RegoloModel); err != nil {
+		log.Fatalf("Failed to initialize Regolo Client: %v", err)
 	}
-	log.Info("Gemini Client initialized successfully.")
+	log.Info("Regolo Client initialized successfully.")
 
 	discord.AddHandler(commandHandler)
 	discord.AddHandler(newMessage)

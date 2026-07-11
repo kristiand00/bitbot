@@ -70,8 +70,8 @@ func ExecuteSSHCommandCore(userID, guildID, command string) (string, error) {
 		return fmt.Sprintf("Error executing command on remote server: %v", err), err
 	}
 
-	// If response is too long for discord/gemini, we might need to truncate
-	// but we'll let the caller or Gemini handle truncation for now.
+	// If response is too long for discord/the LLM, we might need to truncate
+	// but we'll let the caller or the LLM handle truncation for now.
 	if response == "" {
 		return "(Command executed successfully, no output)", nil
 	}
