@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/charmbracelet/log"
@@ -188,6 +189,130 @@ func trimHistory(history []Message) []Message {
 	return history
 }
 
+// Discord rejects any bot message whose content exceeds 2000 characters with a
+// 400 error, which previously caused long AI replies to silently fail to send.
+const (
+	discordMessageLimit = 2000
+	// safeChunkLimit leaves headroom for code-fence markers that balanceCodeFences
+	// may add, so a balanced chunk never exceeds discordMessageLimit.
+	safeChunkLimit = discordMessageLimit - 16
+	// maxReplyChunks caps how many messages a single reply may span so a runaway
+	// response can't spam the channel; anything beyond is truncated.
+	maxReplyChunks = 8
+)
+
+// runeIndex returns the byte offset just after the n-th rune (or len(s)).
+func runeIndex(s string, n int) int {
+	count := 0
+	for i := range s {
+		if count == n {
+			return i
+		}
+		count++
+	}
+	return len(s)
+}
+
+// splitForDiscord breaks content into chunks that each fit within limit
+// characters, preferring paragraph, then line, then word boundaries, and only
+// hard-cutting when a single token is longer than the limit. Splits happen on
+// rune boundaries so multibyte characters are never cut in half.
+func splitForDiscord(content string, limit int) []string {
+	content = strings.TrimRight(content, "\n")
+	if utf8.RuneCountInString(content) <= limit {
+		return []string{content}
+	}
+
+	var chunks []string
+	remaining := content
+	for utf8.RuneCountInString(remaining) > limit {
+		cut := runeIndex(remaining, limit)
+		window := remaining[:cut]
+
+		split := -1
+		for _, sep := range []string{"\n\n", "\n", " "} {
+			if idx := strings.LastIndex(window, sep); idx > 0 {
+				split = idx + len(sep)
+				break
+			}
+		}
+		if split <= 0 {
+			split = cut // no usable boundary: hard cut on the rune boundary
+		}
+
+		chunk := strings.TrimRight(remaining[:split], " \n")
+		if chunk != "" {
+			chunks = append(chunks, chunk)
+		}
+		remaining = strings.TrimLeft(remaining[split:], " \n")
+	}
+	if strings.TrimSpace(remaining) != "" {
+		chunks = append(chunks, remaining)
+	}
+	return chunks
+}
+
+// balanceCodeFences keeps fenced code blocks (```) intact across a split: when a
+// chunk leaves a block open it is closed at the end of that chunk and reopened
+// (with the same language header) at the start of the next.
+func balanceCodeFences(chunks []string) []string {
+	out := make([]string, 0, len(chunks))
+	reopen := "" // header to reopen an unclosed block, e.g. "```go"
+	for _, c := range chunks {
+		if reopen != "" {
+			c = reopen + "\n" + c
+		}
+		var fences []string
+		for _, line := range strings.Split(c, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "```") {
+				fences = append(fences, strings.TrimSpace(line))
+			}
+		}
+		if len(fences)%2 == 1 {
+			// This chunk leaves a block open: close it and remember how to reopen.
+			c += "\n```"
+			reopen = fences[len(fences)-1]
+		} else {
+			reopen = ""
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// truncateToLimit trims s to at most limit runes.
+func truncateToLimit(s string, limit int) string {
+	if utf8.RuneCountInString(s) <= limit {
+		return s
+	}
+	return string([]rune(s)[:limit])
+}
+
+// sendReply sends an AI reply to Discord, splitting it into multiple sequential
+// messages when it exceeds Discord's per-message character limit. discordgo's
+// built-in rate limiter paces the sends, so this won't trip Discord's rate
+// limits; maxReplyChunks additionally guards against flooding the channel.
+func sendReply(session *discordgo.Session, channelID, content string) {
+	chunks := balanceCodeFences(splitForDiscord(content, safeChunkLimit))
+
+	if len(chunks) > maxReplyChunks {
+		chunks = chunks[:maxReplyChunks]
+		notice := "\n… (response truncated)"
+		last := chunks[maxReplyChunks-1]
+		chunks[maxReplyChunks-1] = truncateToLimit(last, discordMessageLimit-utf8.RuneCountInString(notice)) + notice
+	}
+
+	for _, ch := range chunks {
+		if strings.TrimSpace(ch) == "" {
+			continue
+		}
+		if _, err := session.ChannelMessageSend(channelID, ch); err != nil {
+			log.Errorf("Error sending message chunk to Discord: %v", err)
+			return // stop on error rather than hammering the API
+		}
+	}
+}
+
 // recordMessage stores an attributed user message in the channel's history
 // without generating a reply. Used for passive listening so the bot has context
 // on messages that were not addressed to it.
@@ -286,10 +411,7 @@ func chatbot(session *discordgo.Session, userID string, channelID string, guildI
 		if strings.TrimSpace(reply) == "" {
 			reply = "Sorry, I couldn't generate a response. Please try again."
 		}
-		_, err = session.ChannelMessageSend(channelID, reply)
-		if err != nil {
-			log.Errorf("Error sending message to Discord: %v", err)
-		}
+		sendReply(session, channelID, reply)
 		conv.appendAssistant(message)
 		return
 	}
