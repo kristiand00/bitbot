@@ -51,9 +51,54 @@ If the time has already passed today, set the reminder for tomorrow.`
 //	       talk to the bot at once their turns are processed one at a time
 //	       instead of interleaving into incoherent replies.
 type channelConversation struct {
-	histMu  sync.Mutex
-	turnMu  sync.Mutex
-	history []Message
+	histMu       sync.Mutex
+	turnMu       sync.Mutex
+	backfillOnce sync.Once // guards the one-time history backfill from Discord
+	history      []Message
+}
+
+// backfillCount is how many prior channel messages to pull from Discord to seed
+// history after a restart (in-memory history is otherwise empty on boot).
+const backfillCount = 30
+
+// maybeBackfill seeds this channel's history once, from the messages that
+// precede beforeID in the channel, so that after a restart the bot still has
+// context from earlier chat. It runs at most once per conversation (per process)
+// and is a no-op on error. Uses the REST API, which returns message content
+// regardless of gateway intents.
+func (c *channelConversation) maybeBackfill(session *discordgo.Session, channelID, beforeID, botID string) {
+	c.backfillOnce.Do(func() {
+		msgs, err := session.ChannelMessages(channelID, backfillCount, beforeID, "", "")
+		if err != nil {
+			log.Warnf("history backfill failed for channel %s: %v", channelID, err)
+			return
+		}
+
+		// ChannelMessages returns newest-first; walk backwards for chronological order.
+		var seed []Message
+		for i := len(msgs) - 1; i >= 0; i-- {
+			m := msgs[i]
+			if strings.TrimSpace(m.Content) == "" || m.Author == nil {
+				continue
+			}
+			if m.Author.ID == botID {
+				seed = append(seed, Message{Role: "assistant", Content: m.Content})
+				continue
+			}
+			name := m.Author.GlobalName
+			if name == "" {
+				name = m.Author.Username
+			}
+			seed = append(seed, Message{Role: "user", Content: fmt.Sprintf("%s [id:%s]: %s", name, m.Author.ID, m.Content)})
+		}
+
+		c.histMu.Lock()
+		// Prepend the fetched context ahead of anything recorded meanwhile.
+		c.history = append(seed, c.history...)
+		c.history = trimHistory(c.history)
+		c.histMu.Unlock()
+		log.Infof("backfilled %d prior messages for channel %s", len(seed), channelID)
+	})
 }
 
 // appendUser records an attributed user message. Used for both messages
@@ -201,6 +246,10 @@ const (
 	maxReplyChunks = 8
 )
 
+// messageSendDelay paces the messages of a multi-part reply so they don't spam
+// the channel in a single burst.
+const messageSendDelay = 1500 * time.Millisecond
+
 // runeIndex returns the byte offset just after the n-th rune (or len(s)).
 func runeIndex(s string, n int) int {
 	count := 0
@@ -252,29 +301,88 @@ func splitForDiscord(content string, limit int) []string {
 	return chunks
 }
 
-// balanceCodeFences keeps fenced code blocks (```) intact across a split: when a
-// chunk leaves a block open it is closed at the end of that chunk and reopened
-// (with the same language header) at the start of the next.
-func balanceCodeFences(chunks []string) []string {
-	out := make([]string, 0, len(chunks))
-	reopen := "" // header to reopen an unclosed block, e.g. "```go"
-	for _, c := range chunks {
-		if reopen != "" {
-			c = reopen + "\n" + c
+// markdownState captures formatting left open at a chunk boundary so it can be
+// reopened in the next chunk.
+type markdownState struct {
+	fence string // "```go" etc. if a fenced code block is open, else ""
+	code  bool   // inside an inline `code` span
+	bold  bool   // inside a **bold** span
+}
+
+// scanMarkdown returns the formatting still open at the end of s, given the
+// state it started in. Markers inside a fenced code block are ignored, and
+// inline code is treated as single-line (Discord does not render it across
+// newlines).
+func scanMarkdown(s string, st markdownState) markdownState {
+	lines := strings.Split(s, "\n")
+	for idx, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			if st.fence != "" {
+				st.fence = ""
+			} else {
+				st.fence = strings.TrimSpace(line)
+			}
+			continue
 		}
-		var fences []string
-		for _, line := range strings.Split(c, "\n") {
-			if strings.HasPrefix(strings.TrimSpace(line), "```") {
-				fences = append(fences, strings.TrimSpace(line))
+		if st.fence != "" {
+			continue
+		}
+		for i := 0; i < len(line); i++ {
+			switch {
+			case line[i] == '`':
+				st.code = !st.code
+			case !st.code && i+1 < len(line) && line[i] == '*' && line[i+1] == '*':
+				st.bold = !st.bold
+				i++
 			}
 		}
-		if len(fences)%2 == 1 {
-			// This chunk leaves a block open: close it and remember how to reopen.
-			c += "\n```"
-			reopen = fences[len(fences)-1]
-		} else {
-			reopen = ""
+		// Inline code does not render across a real newline, so reset it at each
+		// line boundary — but not after a final segment that has no trailing
+		// newline (a mid-line hard split), where the span continues into the next
+		// chunk and must be carried.
+		if idx < len(lines)-1 {
+			st.code = false
 		}
+	}
+	return st
+}
+
+// balanceMarkdown keeps code fences (```), bold (**) and inline code (`) from
+// being left unclosed when a reply is split across messages: whatever is open at
+// the end of a chunk is closed there and reopened at the start of the next. For
+// well-formed markdown split on line boundaries this is a no-op; it only kicks in
+// when a fenced block spans chunks or a rare mid-line hard split cuts a span.
+func balanceMarkdown(chunks []string) []string {
+	out := make([]string, 0, len(chunks))
+	var carry markdownState
+	for _, c := range chunks {
+		// Reopen whatever the previous chunk left open.
+		if carry.fence != "" {
+			c = carry.fence + "\n" + c
+		} else {
+			if carry.bold {
+				c = "**" + c
+			}
+			if carry.code {
+				c = "`" + c
+			}
+		}
+
+		st := scanMarkdown(c, markdownState{})
+
+		// Close whatever this chunk leaves open.
+		if st.fence != "" {
+			c += "\n```"
+		} else {
+			if st.code {
+				c += "`"
+			}
+			if st.bold {
+				c += "**"
+			}
+		}
+
+		carry = st
 		out = append(out, c)
 	}
 	return out
@@ -293,7 +401,7 @@ func truncateToLimit(s string, limit int) string {
 // built-in rate limiter paces the sends, so this won't trip Discord's rate
 // limits; maxReplyChunks additionally guards against flooding the channel.
 func sendReply(session *discordgo.Session, channelID, content string) {
-	chunks := balanceCodeFences(splitForDiscord(content, safeChunkLimit))
+	chunks := balanceMarkdown(splitForDiscord(content, safeChunkLimit))
 
 	if len(chunks) > maxReplyChunks {
 		chunks = chunks[:maxReplyChunks]
@@ -302,9 +410,15 @@ func sendReply(session *discordgo.Session, channelID, content string) {
 		chunks[maxReplyChunks-1] = truncateToLimit(last, discordMessageLimit-utf8.RuneCountInString(notice)) + notice
 	}
 
-	for _, ch := range chunks {
+	for i, ch := range chunks {
 		if strings.TrimSpace(ch) == "" {
 			continue
+		}
+		// Pace multi-message replies so they read as a natural sequence rather
+		// than a burst (and give Discord's rate limiter room to breathe).
+		if i > 0 {
+			session.ChannelTyping(channelID)
+			time.Sleep(messageSendDelay)
 		}
 		if _, err := session.ChannelMessageSend(channelID, ch); err != nil {
 			log.Errorf("Error sending message chunk to Discord: %v", err)

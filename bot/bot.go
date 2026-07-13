@@ -209,6 +209,11 @@ func newMessage(discord *discordgo.Session, message *discordgo.MessageCreate) {
 	}
 	isPrivateChannel := message.GuildID == ""
 
+	// After a restart, in-memory history is empty; seed it once from the channel's
+	// prior messages so the bot still has earlier context. Anchored before the
+	// current message so it isn't duplicated by the record below.
+	getConversation(message.ChannelID).maybeBackfill(discord, message.ChannelID, message.ID, discord.State.User.ID)
+
 	// Passive listening: record every human message (attributed to its speaker)
 	// so the bot has full channel context and can answer "who said what" even for
 	// messages that were not addressed to it.
