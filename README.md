@@ -48,7 +48,7 @@ Beyond the built-in reminder tools, the bot exposes a **toolbelt**: the model se
 
 MCP servers are managed from Discord with the admin-only **`/mcp`** command:
 
-- `/mcp add name:<name> url:<url> [token:<token>]` — add and connect a server (`url` is a Streamable-HTTP MCP endpoint; `token` is an optional bearer token)
+- `/mcp add name:<name> url:<url> [token:<token>] [admin_only:<true|false>]` — add and connect a server (`url` is a Streamable-HTTP MCP endpoint; `token` is an optional bearer token; `admin_only` defaults to `true` — set `false` to let non-admins use the server's tools)
 - `/mcp remove name:<name>` — disconnect a server and remove its tools
 - `/mcp list` — show configured servers and their connection status / tool counts
 - `/mcp reload` — re-sync immediately

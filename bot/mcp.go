@@ -27,6 +27,7 @@ type mcpConnection struct {
 	name      string
 	url       string
 	token     string
+	adminOnly bool
 	session   *mcp.ClientSession
 	toolNames []string
 }
@@ -56,7 +57,7 @@ func InitMCP(ctx context.Context) {
 	// One-time migration: if BAKI_MCP_URL is set, ensure it exists as a row so the
 	// PocketBase collection becomes the single source of truth going forward.
 	if url := strings.TrimSpace(os.Getenv("BAKI_MCP_URL")); url != "" {
-		if created, err := pb.AddMCPServer("baki", url, strings.TrimSpace(os.Getenv("BAKI_MCP_TOKEN"))); err != nil {
+		if created, err := pb.AddMCPServer("baki", url, strings.TrimSpace(os.Getenv("BAKI_MCP_TOKEN")), true); err != nil {
 			log.Warnf("could not seed MCP server from env: %v", err)
 		} else if created {
 			log.Info("seeded MCP server 'baki' from environment into mcp_servers")
@@ -99,9 +100,11 @@ func syncMCPServers(ctx context.Context) {
 	mcpConnectionsMu.Unlock()
 
 	// Remove connections no longer desired (deleted, disabled, or reconfigured).
+	// An admin_only change also triggers a reconnect so tools re-register with the
+	// new access level.
 	for name, conn := range current {
 		want, ok := desired[name]
-		if !ok || want.URL != conn.url || want.Token != conn.token {
+		if !ok || want.URL != conn.url || want.Token != conn.token || want.AdminOnly != conn.adminOnly {
 			disconnectMCPServer(name)
 		}
 	}
@@ -150,7 +153,7 @@ func connectMCPServer(ctx context.Context, srv *pb.MCPServer) error {
 		return err
 	}
 
-	conn := &mcpConnection{name: srv.Name, url: srv.URL, token: srv.Token, session: session}
+	conn := &mcpConnection{name: srv.Name, url: srv.URL, token: srv.Token, adminOnly: srv.AdminOnly, session: session}
 	for _, tool := range res.Tools {
 		destructive := false
 		if tool.Annotations != nil && tool.Annotations.DestructiveHint != nil {
@@ -162,10 +165,10 @@ func connectMCPServer(ctx context.Context, srv *pb.MCPServer) error {
 			Name:        toolName,
 			Description: tool.Description,
 			InputSchema: tool.InputSchema,
-			Source:      srv.Name,
-			// Remote tools expose/mutate infrastructure: require admin, and gate
-			// destructive ones behind a confirmation button.
-			AdminOnly:   true,
+			Source: srv.Name,
+			// Admin requirement is per-server; destructive tools are always gated
+			// behind a confirmation button that only an admin can approve.
+			AdminOnly:   srv.AdminOnly,
 			Destructive: destructive,
 			Invoke: func(ctx context.Context, userID, channelID, guildID string, args map[string]any) (string, error) {
 				return callMCPTool(ctx, s, toolName, args)
@@ -226,15 +229,25 @@ func HandleMCPCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		}
 		return ""
 	}
+	// optBool returns the option value, or def if it wasn't provided.
+	optBool := func(name string, def bool) bool {
+		for _, o := range sub.Options {
+			if o.Name == name {
+				return o.BoolValue()
+			}
+		}
+		return def
+	}
 
 	switch sub.Name {
 	case "add":
 		name, url, token := optStr("name"), optStr("url"), optStr("token")
+		adminOnly := optBool("admin_only", true) // default: admin-only
 		if name == "" || url == "" {
 			respondWithMessage(s, i, "`/mcp add` requires `name` and `url`.")
 			return
 		}
-		created, err := pb.AddMCPServer(name, url, token)
+		created, err := pb.AddMCPServer(name, url, token, adminOnly)
 		if err != nil {
 			respondWithMessage(s, i, "Failed to add MCP server: "+err.Error())
 			return
@@ -247,6 +260,33 @@ func HandleMCPCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		channelID := i.ChannelID
 		go func() {
 			syncMCPServers(context.Background())
+			s.ChannelMessageSend(channelID, mcpServerStatusLine(name))
+		}()
+
+	case "access":
+		name := optStr("name")
+		adminOnly := optBool("admin_only", true)
+		if name == "" {
+			respondWithMessage(s, i, "`/mcp access` requires `name` and `admin_only`.")
+			return
+		}
+		found, err := pb.SetMCPServerAccess(name, adminOnly)
+		if err != nil {
+			respondWithMessage(s, i, "Failed to update access: "+err.Error())
+			return
+		}
+		if !found {
+			respondWithMessage(s, i, fmt.Sprintf("No MCP server named `%s`.", name))
+			return
+		}
+		access := "public"
+		if adminOnly {
+			access = "admin-only"
+		}
+		respondWithMessage(s, i, fmt.Sprintf("Set `%s` to **%s**. Reconnecting…", name, access))
+		channelID := i.ChannelID
+		go func() {
+			syncMCPServers(context.Background()) // detects the admin_only change and reconnects
 			s.ChannelMessageSend(channelID, mcpServerStatusLine(name))
 		}()
 
@@ -312,7 +352,11 @@ func mcpListReport() string {
 		} else if !srv.Enabled {
 			status = "disabled"
 		}
-		sb.WriteString(fmt.Sprintf("• `%s` — %s — %s — %d tools\n", srv.Name, srv.URL, status, tools))
+		access := "admin-only"
+		if !srv.AdminOnly {
+			access = "public"
+		}
+		sb.WriteString(fmt.Sprintf("• `%s` — %s — %s — %s — %d tools\n", srv.Name, srv.URL, status, access, tools))
 	}
 	return sb.String()
 }

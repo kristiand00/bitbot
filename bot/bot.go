@@ -133,6 +133,7 @@ var (
 						{Type: discordgo.ApplicationCommandOptionString, Name: "name", Description: "Unique name for the server.", Required: true},
 						{Type: discordgo.ApplicationCommandOptionString, Name: "url", Description: "Streamable-HTTP MCP endpoint URL.", Required: true},
 						{Type: discordgo.ApplicationCommandOptionString, Name: "token", Description: "Optional bearer token.", Required: false},
+						{Type: discordgo.ApplicationCommandOptionBoolean, Name: "admin_only", Description: "Require admin to use these tools (default true).", Required: false},
 					},
 				},
 				{
@@ -141,6 +142,15 @@ var (
 					Type:        discordgo.ApplicationCommandOptionSubCommand,
 					Options: []*discordgo.ApplicationCommandOption{
 						{Type: discordgo.ApplicationCommandOptionString, Name: "name", Description: "Name of the server to remove.", Required: true},
+					},
+				},
+				{
+					Name:        "access",
+					Description: "Change whether a server's tools require admin.",
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Options: []*discordgo.ApplicationCommandOption{
+						{Type: discordgo.ApplicationCommandOptionString, Name: "name", Description: "Name of the server.", Required: true},
+						{Type: discordgo.ApplicationCommandOptionBoolean, Name: "admin_only", Description: "True = admin only, false = public.", Required: true},
 					},
 				},
 				{Name: "list", Description: "List configured MCP servers and their status.", Type: discordgo.ApplicationCommandOptionSubCommand},
@@ -441,7 +451,7 @@ func commandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 					"/exe - Execute a command on the remote server.\n" +
 					"/exit - Close the SSH connection.\n" +
 					"/list - List saved servers.\n" +
-					"/mcp add|remove|list|reload - Manage MCP tool servers.\n"
+					"/mcp add|remove|access|list|reload - Manage MCP tool servers.\n"
 			}
 			respondWithMessage(s, i, helpMessage)
 

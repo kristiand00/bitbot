@@ -234,16 +234,32 @@ type MCPServer struct {
 	URL     string
 	Token   string
 	Enabled bool
+	// AdminOnly is true when the server's tools require admin access. Stored
+	// inverted as a "public" flag so the safe default (absent/false) is admin-only.
+	AdminOnly bool
 }
 
 const mcpServersCollection = "mcp_servers"
 
-// ensureMCPServersCollection creates the mcp_servers collection if it doesn't exist.
+// ensureMCPServersCollection creates the mcp_servers collection if missing, and
+// evolves its schema (adding newer fields like "public") if it already exists.
 func ensureMCPServersCollection() error {
 	currentApp := GetApp()
 
-	if _, err := currentApp.FindCollectionByNameOrId(mcpServersCollection); err == nil {
-		log.Info("mcp_servers collection already exists")
+	if collection, err := currentApp.FindCollectionByNameOrId(mcpServersCollection); err == nil {
+		// Already exists: ensure newer fields are present. Use SaveNoValidate to
+		// add the field: these collections were created with id == name, which
+		// PocketBase's collection-update validation rejects (a name must not match
+		// an existing collection id) even though the schema change itself is valid.
+		if collection.Fields.GetByName("public") == nil {
+			collection.Fields.Add(&core.BoolField{Name: "public", Required: false})
+			if err := currentApp.SaveNoValidate(collection); err != nil {
+				return fmt.Errorf("failed to add 'public' field to mcp_servers: %v", err)
+			}
+			log.Info("Added 'public' field to mcp_servers collection")
+		} else {
+			log.Info("mcp_servers collection already exists")
+		}
 		return nil
 	}
 
@@ -253,6 +269,7 @@ func ensureMCPServersCollection() error {
 	collection.Fields.Add(&core.TextField{Name: "url", Required: true})
 	collection.Fields.Add(&core.TextField{Name: "token", Required: false})
 	collection.Fields.Add(&core.BoolField{Name: "enabled", Required: false})
+	collection.Fields.Add(&core.BoolField{Name: "public", Required: false})
 
 	if err := currentApp.Save(collection); err != nil {
 		return fmt.Errorf("failed to create mcp_servers collection: %v", err)
@@ -275,19 +292,21 @@ func ListMCPServers() ([]*MCPServer, error) {
 	servers := make([]*MCPServer, 0, len(records))
 	for _, r := range records {
 		servers = append(servers, &MCPServer{
-			ID:      r.Id,
-			Name:    r.GetString("name"),
-			URL:     r.GetString("url"),
-			Token:   r.GetString("token"),
-			Enabled: r.GetBool("enabled"),
+			ID:        r.Id,
+			Name:      r.GetString("name"),
+			URL:       r.GetString("url"),
+			Token:     r.GetString("token"),
+			Enabled:   r.GetBool("enabled"),
+			AdminOnly: !r.GetBool("public"), // default (absent/false) => admin-only
 		})
 	}
 	return servers, nil
 }
 
 // AddMCPServer inserts a new MCP server (enabled) if one with the same URL does
-// not already exist. Returns whether a record was created.
-func AddMCPServer(name, url, token string) (bool, error) {
+// not already exist. adminOnly controls whether the server's tools require admin
+// access. Returns whether a record was created.
+func AddMCPServer(name, url, token string, adminOnly bool) (bool, error) {
 	currentApp := GetApp()
 
 	if existing, _ := currentApp.FindFirstRecordByFilter(mcpServersCollection, "url = {:url}", dbx.Params{"url": url}); existing != nil {
@@ -303,6 +322,25 @@ func AddMCPServer(name, url, token string) (bool, error) {
 	record.Set("url", url)
 	record.Set("token", token)
 	record.Set("enabled", true)
+	record.Set("public", !adminOnly)
+	if err := currentApp.Save(record); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// SetMCPServerAccess updates whether a server's tools require admin access.
+// Returns whether a matching server was found.
+func SetMCPServerAccess(name string, adminOnly bool) (bool, error) {
+	currentApp := GetApp()
+	record, err := currentApp.FindFirstRecordByFilter(mcpServersCollection, "name = {:name}", dbx.Params{"name": name})
+	if err != nil {
+		if isNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	record.Set("public", !adminOnly)
 	if err := currentApp.Save(record); err != nil {
 		return false, err
 	}
