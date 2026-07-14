@@ -133,12 +133,16 @@ var (
 						{Type: discordgo.ApplicationCommandOptionString, Name: "name", Description: "Unique name for the server.", Required: true},
 						{Type: discordgo.ApplicationCommandOptionString, Name: "url", Description: "Streamable-HTTP MCP endpoint URL.", Required: true},
 						{Type: discordgo.ApplicationCommandOptionString, Name: "token", Description: "Optional bearer token.", Required: false},
-						{Type: discordgo.ApplicationCommandOptionBoolean, Name: "admin_only", Description: "Require admin to use these tools (default true).", Required: false},
+						{
+							Type: discordgo.ApplicationCommandOptionString, Name: "visibility",
+							Description: "Who can use these tools (default: private to you).", Required: false,
+							Choices: mcpVisibilityChoices,
+						},
 					},
 				},
 				{
 					Name:        "remove",
-					Description: "Remove an MCP server and its tools.",
+					Description: "Remove one of your MCP servers and its tools.",
 					Type:        discordgo.ApplicationCommandOptionSubCommand,
 					Options: []*discordgo.ApplicationCommandOption{
 						{Type: discordgo.ApplicationCommandOptionString, Name: "name", Description: "Name of the server to remove.", Required: true},
@@ -146,11 +150,15 @@ var (
 				},
 				{
 					Name:        "access",
-					Description: "Change whether a server's tools require admin.",
+					Description: "Change who can use one of your servers' tools.",
 					Type:        discordgo.ApplicationCommandOptionSubCommand,
 					Options: []*discordgo.ApplicationCommandOption{
 						{Type: discordgo.ApplicationCommandOptionString, Name: "name", Description: "Name of the server.", Required: true},
-						{Type: discordgo.ApplicationCommandOptionBoolean, Name: "admin_only", Description: "True = admin only, false = public.", Required: true},
+						{
+							Type: discordgo.ApplicationCommandOptionString, Name: "visibility",
+							Description: "private (you), admins, or public (everyone).", Required: true,
+							Choices: mcpVisibilityChoices,
+						},
 					},
 				},
 				{Name: "list", Description: "List configured MCP servers and their status.", Type: discordgo.ApplicationCommandOptionSubCommand},

@@ -1,6 +1,7 @@
 package pb
 
 import (
+	"bitbot/pb/migrations"
 	"database/sql"
 	"encoding/json" // For unmarshalling target_user_ids fallback
 	"errors"
@@ -82,149 +83,20 @@ func Init() {
 	})
 }
 
-// ensureCollectionsExist creates the necessary collections if they don't exist
+// ensureCollectionsExist runs all pending schema/data migrations (see the
+// migrations package). Required-collection failures return an error (fatal at
+// startup); optional ones are logged and skipped inside the runner.
 func ensureCollectionsExist() error {
-	// Ensure reminders collection exists
-	if err := ensureRemindersCollection(); err != nil {
-		return fmt.Errorf("failed to ensure reminders collection: %v", err)
-	}
-
-	// Ensure servers collection exists
-	if err := ensureServersCollection(); err != nil {
-		return fmt.Errorf("failed to ensure servers collection: %v", err)
-	}
-
-	// Ensure mcp_servers collection exists. This is optional (MCP integration) and
-	// must never prevent startup: if it fails, log and continue so the bot stays up
-	// with the rest of its functionality rather than dying on boot.
-	if err := ensureMCPServersCollection(); err != nil {
-		log.Warn("Could not ensure mcp_servers collection; MCP integration disabled for now", "error", err)
-	}
-
-	return nil
+	return migrations.Run(GetApp())
 }
 
-// ensureRemindersCollection creates the reminders collection if it doesn't exist
-func ensureRemindersCollection() error {
-	currentApp := GetApp()
-
-	// Check if collection already exists
-	_, err := currentApp.FindCollectionByNameOrId(remindersCollection)
-	if err == nil {
-		log.Info("Reminders collection already exists")
-		return nil
-	}
-
-	log.Info("Creating reminders collection...")
-
-	// Create the collection using the proper PocketBase API
-	collection := core.NewBaseCollection(remindersCollection, remindersCollection)
-
-	// Add fields using the proper method from the documentation
-	collection.Fields.Add(&core.TextField{
-		Name:     "user_id",
-		Required: true,
-	})
-
-	collection.Fields.Add(&core.JSONField{
-		Name:     "target_user_ids",
-		Required: true,
-	})
-
-	collection.Fields.Add(&core.TextField{
-		Name:     "message",
-		Required: true,
-	})
-
-	collection.Fields.Add(&core.TextField{
-		Name:     "channel_id",
-		Required: true,
-	})
-
-	collection.Fields.Add(&core.TextField{
-		Name:     "guild_id",
-		Required: false,
-	})
-
-	collection.Fields.Add(&core.TextField{
-		Name:     "reminder_time",
-		Required: true,
-	})
-
-	// Use BoolField but make it not required to avoid validation issues
-	collection.Fields.Add(&core.BoolField{
-		Name:     "is_recurring",
-		Required: false,
-	})
-
-	collection.Fields.Add(&core.TextField{
-		Name:     "recurrence_rule",
-		Required: false,
-	})
-
-	collection.Fields.Add(&core.TextField{
-		Name:     "next_reminder_time",
-		Required: false,
-	})
-
-	collection.Fields.Add(&core.TextField{
-		Name:     "last_triggered_at",
-		Required: false,
-	})
-
-	if err := currentApp.Save(collection); err != nil {
-		return fmt.Errorf("failed to create reminders collection: %v", err)
-	}
-
-	log.Info("Created reminders collection successfully")
-
-	// Debug the schema to see what fields were actually created
-	if err := debugCollectionSchema(); err != nil {
-		log.Warn("Failed to debug collection schema", "error", err)
-	}
-
-	return nil
-}
-
-// ensureServersCollection creates the servers collection if it doesn't exist
-func ensureServersCollection() error {
-	currentApp := GetApp()
-
-	// Check if collection already exists
-	_, err := currentApp.FindCollectionByNameOrId("servers")
-	if err == nil {
-		log.Info("Servers collection already exists")
-		return nil
-	}
-
-	log.Info("Creating servers collection...")
-
-	// Create the collection using the proper PocketBase API
-	collection := core.NewBaseCollection("servers", "servers")
-
-	// Add fields using the proper method from the documentation
-	collection.Fields.Add(&core.TextField{
-		Name:     "UserID",
-		Required: true,
-	})
-
-	collection.Fields.Add(&core.TextField{
-		Name:     "GuildID", // Added GuildID field
-		Required: true,      // Assuming GuildID is required for server records
-	})
-
-	collection.Fields.Add(&core.TextField{
-		Name:     "ConnectionDetails",
-		Required: true,
-	})
-
-	if err := currentApp.Save(collection); err != nil {
-		return fmt.Errorf("failed to create servers collection: %v", err)
-	}
-
-	log.Info("Created servers collection successfully")
-	return nil
-}
+// MCP visibility levels controlling who (besides the owner) may use a server's
+// tools.
+const (
+	MCPVisibilityPrivate = "private" // owner only
+	MCPVisibilityAdmins  = "admins"  // owner + any admin
+	MCPVisibilityPublic  = "public"  // everyone
+)
 
 // MCPServer describes a remote MCP server whose tools are exposed through the
 // bot's toolbelt.
@@ -234,48 +106,22 @@ type MCPServer struct {
 	URL     string
 	Token   string
 	Enabled bool
-	// AdminOnly is true when the server's tools require admin access. Stored
-	// inverted as a "public" flag so the safe default (absent/false) is admin-only.
-	AdminOnly bool
+	// Owner is the Discord user ID that added the server (empty for legacy/system
+	// servers). Its token is used for all calls to the server.
+	Owner string
+	// Visibility is one of MCPVisibility{Private,Admins,Public}.
+	Visibility string
 }
 
 const mcpServersCollection = "mcp_servers"
 
-// ensureMCPServersCollection creates the mcp_servers collection if missing, and
-// evolves its schema (adding newer fields like "public") if it already exists.
-func ensureMCPServersCollection() error {
-	currentApp := GetApp()
-
-	if collection, err := currentApp.FindCollectionByNameOrId(mcpServersCollection); err == nil {
-		// Already exists: ensure newer fields are present. Use SaveNoValidate to
-		// add the field: these collections were created with id == name, which
-		// PocketBase's collection-update validation rejects (a name must not match
-		// an existing collection id) even though the schema change itself is valid.
-		if collection.Fields.GetByName("public") == nil {
-			collection.Fields.Add(&core.BoolField{Name: "public", Required: false})
-			if err := currentApp.SaveNoValidate(collection); err != nil {
-				return fmt.Errorf("failed to add 'public' field to mcp_servers: %v", err)
-			}
-			log.Info("Added 'public' field to mcp_servers collection")
-		} else {
-			log.Info("mcp_servers collection already exists")
-		}
-		return nil
+func normalizeVisibility(v string) string {
+	switch v {
+	case MCPVisibilityAdmins, MCPVisibilityPublic:
+		return v
+	default:
+		return MCPVisibilityPrivate
 	}
-
-	log.Info("Creating mcp_servers collection...")
-	collection := core.NewBaseCollection(mcpServersCollection, mcpServersCollection)
-	collection.Fields.Add(&core.TextField{Name: "name", Required: true})
-	collection.Fields.Add(&core.TextField{Name: "url", Required: true})
-	collection.Fields.Add(&core.TextField{Name: "token", Required: false})
-	collection.Fields.Add(&core.BoolField{Name: "enabled", Required: false})
-	collection.Fields.Add(&core.BoolField{Name: "public", Required: false})
-
-	if err := currentApp.Save(collection); err != nil {
-		return fmt.Errorf("failed to create mcp_servers collection: %v", err)
-	}
-	log.Info("Created mcp_servers collection successfully")
-	return nil
 }
 
 // ListMCPServers returns all configured MCP servers.
@@ -292,24 +138,28 @@ func ListMCPServers() ([]*MCPServer, error) {
 	servers := make([]*MCPServer, 0, len(records))
 	for _, r := range records {
 		servers = append(servers, &MCPServer{
-			ID:        r.Id,
-			Name:      r.GetString("name"),
-			URL:       r.GetString("url"),
-			Token:     r.GetString("token"),
-			Enabled:   r.GetBool("enabled"),
-			AdminOnly: !r.GetBool("public"), // default (absent/false) => admin-only
+			ID:         r.Id,
+			Name:       r.GetString("name"),
+			URL:        r.GetString("url"),
+			Token:      r.GetString("token"),
+			Enabled:    r.GetBool("enabled"),
+			Owner:      r.GetString("owner"),
+			Visibility: normalizeVisibility(r.GetString("visibility")),
 		})
 	}
 	return servers, nil
 }
 
-// AddMCPServer inserts a new MCP server (enabled) if one with the same URL does
-// not already exist. adminOnly controls whether the server's tools require admin
-// access. Returns whether a record was created.
-func AddMCPServer(name, url, token string, adminOnly bool) (bool, error) {
+// AddMCPServer inserts a new MCP server owned by owner. It is a no-op (returns
+// false) if the same owner already has a server with that URL. Visibility
+// controls who besides the owner may use its tools.
+func AddMCPServer(name, url, token, owner, visibility string) (bool, error) {
 	currentApp := GetApp()
 
-	if existing, _ := currentApp.FindFirstRecordByFilter(mcpServersCollection, "url = {:url}", dbx.Params{"url": url}); existing != nil {
+	if existing, _ := currentApp.FindFirstRecordByFilter(
+		mcpServersCollection, "url = {:url} && owner = {:owner}",
+		dbx.Params{"url": url, "owner": owner},
+	); existing != nil {
 		return false, nil
 	}
 
@@ -322,42 +172,57 @@ func AddMCPServer(name, url, token string, adminOnly bool) (bool, error) {
 	record.Set("url", url)
 	record.Set("token", token)
 	record.Set("enabled", true)
-	record.Set("public", !adminOnly)
+	record.Set("owner", owner)
+	record.Set("visibility", normalizeVisibility(visibility))
 	if err := currentApp.Save(record); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-// SetMCPServerAccess updates whether a server's tools require admin access.
+// findOwnedOrLegacy locates a server by name that the caller may manage: one they
+// own, or a legacy/unowned one. Returns nil if none match.
+func findOwnedOrLegacy(name, caller string) *core.Record {
+	currentApp := GetApp()
+	// Prefer the caller's own server over a legacy one with the same name.
+	rec, err := currentApp.FindFirstRecordByFilter(
+		mcpServersCollection, "name = {:name} && owner = {:owner}",
+		dbx.Params{"name": name, "owner": caller},
+	)
+	if err == nil && rec != nil {
+		return rec
+	}
+	rec, err = currentApp.FindFirstRecordByFilter(
+		mcpServersCollection, "name = {:name} && owner = ''",
+		dbx.Params{"name": name},
+	)
+	if err == nil {
+		return rec
+	}
+	return nil
+}
+
+// SetMCPServerVisibility updates the visibility of a server the caller may manage.
 // Returns whether a matching server was found.
-func SetMCPServerAccess(name string, adminOnly bool) (bool, error) {
-	currentApp := GetApp()
-	record, err := currentApp.FindFirstRecordByFilter(mcpServersCollection, "name = {:name}", dbx.Params{"name": name})
-	if err != nil {
-		if isNotFound(err) {
-			return false, nil
-		}
-		return false, err
+func SetMCPServerVisibility(name, caller, visibility string) (bool, error) {
+	record := findOwnedOrLegacy(name, caller)
+	if record == nil {
+		return false, nil
 	}
-	record.Set("public", !adminOnly)
-	if err := currentApp.Save(record); err != nil {
+	record.Set("visibility", normalizeVisibility(visibility))
+	if err := GetApp().Save(record); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-// RemoveMCPServer deletes the MCP server with the given name. Not-found is a no-op.
-func RemoveMCPServer(name string) error {
-	currentApp := GetApp()
-	record, err := currentApp.FindFirstRecordByFilter(mcpServersCollection, "name = {:name}", dbx.Params{"name": name})
-	if err != nil {
-		if isNotFound(err) {
-			return nil
-		}
-		return err
+// RemoveMCPServer deletes a server the caller may manage. Not-found is a no-op.
+func RemoveMCPServer(name, caller string) error {
+	record := findOwnedOrLegacy(name, caller)
+	if record == nil {
+		return nil
 	}
-	return currentApp.Delete(record)
+	return GetApp().Delete(record)
 }
 
 // GetApp is a helper to ensure pbApp is initialized.
@@ -717,30 +582,4 @@ func GetReminderByID(reminderID string) (*Reminder, error) {
 		return nil, err
 	}
 	return recordToReminder(record), nil
-}
-
-// debugCollectionSchema prints the actual schema of the reminders collection
-func debugCollectionSchema() error {
-	currentApp := GetApp()
-	collection, err := currentApp.FindCollectionByNameOrId(remindersCollection)
-	if err != nil {
-		log.Error("Error finding reminders collection for debug", "error", err)
-		return err
-	}
-
-	log.Info("=== REMINDERS COLLECTION SCHEMA DEBUG ===")
-	log.Info("Collection ID", "id", collection.Id)
-	log.Info("Collection Name", "name", collection.Name)
-	log.Info("Collection Type", "type", collection.Type)
-	log.Info("Number of fields", "count", len(collection.Fields))
-
-	for i, field := range collection.Fields {
-		log.Info("Field",
-			"index", i,
-			"name", field.GetName(),
-			"id", field.GetId(),
-		)
-	}
-	log.Info("=== END SCHEMA DEBUG ===")
-	return nil
 }

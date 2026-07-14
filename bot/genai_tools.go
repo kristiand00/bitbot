@@ -223,7 +223,7 @@ func HandleFunctionCallWithContext(s *discordgo.Session, i *discordgo.Interactio
 		return jsonResult("success", resp), nil
 
 	case "find_tools":
-		return handleFindTools(args), nil
+		return handleFindTools(userID, authorizeSSH(s, guildID, userID), args), nil
 
 	case "call_tool":
 		return handleCallTool(s, userID, channelID, guildID, args), nil

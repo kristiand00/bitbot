@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"bitbot/pb"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -21,53 +22,88 @@ type registeredTool struct {
 	Name        string
 	Description string
 	InputSchema any    // JSON Schema for the tool's arguments
-	Source      string // "" for local tools, else the MCP server name
-	AdminOnly   bool
-	Destructive bool // requires an admin Confirm/Cancel button before running
+	Source      string // "local" for built-in tools, else serverKey(owner, name)
+	Owner       string // "" for local/legacy tools, else the owning Discord user ID
+	Visibility  string // pb.MCPVisibility{Private,Admins,Public}
+	Destructive bool   // requires an admin Confirm/Cancel button before running
 	Invoke      func(ctx context.Context, userID, channelID, guildID string, args map[string]any) (string, error)
 }
 
 var (
+	// toolRegistry is keyed by regKey(Source, Name) so that two owners' servers
+	// exposing the same tool name don't collide.
 	toolRegistry   = map[string]*registeredTool{}
 	toolRegistryMu sync.RWMutex
 )
 
+func regKey(source, name string) string { return source + "\x00" + name }
+
 func registerTool(t *registeredTool) {
 	toolRegistryMu.Lock()
 	defer toolRegistryMu.Unlock()
-	toolRegistry[t.Name] = t
-	log.Infof("registered toolbelt tool: %s (adminOnly=%v destructive=%v)", t.Name, t.AdminOnly, t.Destructive)
+	toolRegistry[regKey(t.Source, t.Name)] = t
+	log.Infof("registered toolbelt tool: %s (owner=%q visibility=%s destructive=%v)", t.Name, t.Owner, t.Visibility, t.Destructive)
 }
 
-func lookupTool(name string) *registeredTool {
-	toolRegistryMu.RLock()
-	defer toolRegistryMu.RUnlock()
-	return toolRegistry[name]
-}
-
-// unregisterSource removes every tool registered by the given source (MCP server
-// name) and returns how many were removed.
+// unregisterSource removes every tool registered by the given source and returns
+// how many were removed.
 func unregisterSource(source string) int {
 	toolRegistryMu.Lock()
 	defer toolRegistryMu.Unlock()
 	n := 0
-	for name, t := range toolRegistry {
+	for key, t := range toolRegistry {
 		if t.Source == source {
-			delete(toolRegistry, name)
+			delete(toolRegistry, key)
 			n++
 		}
 	}
 	return n
 }
 
-func listRegisteredTools() []*registeredTool {
+// canAccess reports whether the caller may see/use a tool.
+func canAccess(t *registeredTool, callerID string, isAdmin bool) bool {
+	if t.Owner != "" && t.Owner == callerID {
+		return true // you always have access to your own servers
+	}
+	switch t.Visibility {
+	case pb.MCPVisibilityPublic:
+		return true
+	case pb.MCPVisibilityAdmins:
+		return isAdmin
+	default: // private
+		return false
+	}
+}
+
+// accessibleTools returns the tools the caller may use.
+func accessibleTools(callerID string, isAdmin bool) []*registeredTool {
 	toolRegistryMu.RLock()
 	defer toolRegistryMu.RUnlock()
 	out := make([]*registeredTool, 0, len(toolRegistry))
 	for _, t := range toolRegistry {
-		out = append(out, t)
+		if canAccess(t, callerID, isAdmin) {
+			out = append(out, t)
+		}
 	}
 	return out
+}
+
+// resolveAccessibleTool finds a tool by name among those the caller may use,
+// preferring one the caller owns when names collide.
+func resolveAccessibleTool(callerID string, isAdmin bool, name string) *registeredTool {
+	var match *registeredTool
+	for _, t := range accessibleTools(callerID, isAdmin) {
+		if t.Name != name {
+			continue
+		}
+		if t.Owner == callerID {
+			return t
+		}
+		if match == nil {
+			match = t
+		}
+	}
+	return match
 }
 
 // ToolbeltTools are the only extended-tool entries the model sees directly;
@@ -77,13 +113,13 @@ var ToolbeltTools = []Tool{
 		Type: "function",
 		Function: functionSpec{
 			Name:        "find_tools",
-			Description: "Discover extended tools available through the toolbelt (SSH management, backups, and other integrations). Returns each matching tool's name, description, and JSON input schema. Call this before call_tool to learn the exact tool name and its arguments.",
+			Description: "Discover extended tools available to you through the toolbelt (SSH management, backups, and other integrations). Returns each matching tool's name, description, and JSON input schema. Call this before call_tool to learn the exact tool name and its arguments.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"query": map[string]interface{}{
 						"type":        "string",
-						"description": "Optional case-insensitive filter matched against tool names and descriptions. Omit or leave empty to list every tool.",
+						"description": "Optional case-insensitive filter matched against tool names and descriptions. Omit or leave empty to list every tool available to you.",
 					},
 				},
 			},
@@ -93,7 +129,7 @@ var ToolbeltTools = []Tool{
 		Type: "function",
 		Function: functionSpec{
 			Name:        "call_tool",
-			Description: "Invoke a toolbelt tool discovered via find_tools. Provide the exact tool name and an arguments object matching that tool's input schema. Some tools are admin-only; destructive tools require the user to confirm with a button before they run.",
+			Description: "Invoke a toolbelt tool discovered via find_tools. Provide the exact tool name and an arguments object matching that tool's input schema. Destructive tools require the user to confirm with a button before they run.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -112,25 +148,23 @@ var ToolbeltTools = []Tool{
 	},
 }
 
-// handleFindTools returns a JSON catalog of registered tools, optionally filtered
-// by a query, including each tool's input schema so the model can build a valid
-// call_tool request in one step.
-func handleFindTools(args map[string]any) string {
+// handleFindTools returns a JSON catalog of the tools the caller may use,
+// optionally filtered by a query, including each tool's input schema.
+func handleFindTools(callerID string, isAdmin bool, args map[string]any) string {
 	query := strings.ToLower(strings.TrimSpace(getStr(args, "query")))
 
 	type toolInfo struct {
 		Name        string `json:"name"`
 		Description string `json:"description"`
 		InputSchema any    `json:"input_schema"`
-		AdminOnly   bool   `json:"admin_only"`
 		Destructive bool   `json:"destructive"`
 	}
 	infos := []toolInfo{}
-	for _, t := range listRegisteredTools() {
+	for _, t := range accessibleTools(callerID, isAdmin) {
 		if query != "" && !strings.Contains(strings.ToLower(t.Name+" "+t.Description), query) {
 			continue
 		}
-		infos = append(infos, toolInfo{t.Name, t.Description, t.InputSchema, t.AdminOnly, t.Destructive})
+		infos = append(infos, toolInfo{t.Name, t.Description, t.InputSchema, t.Destructive})
 	}
 	b, err := json.Marshal(map[string]any{"tools": infos, "count": len(infos)})
 	if err != nil {
@@ -139,9 +173,9 @@ func handleFindTools(args map[string]any) string {
 	return string(b)
 }
 
-// handleCallTool dispatches a call to a registered tool, enforcing the admin and
-// confirmation policy. Destructive tools are not run here: a Confirm/Cancel
-// prompt is sent and execution happens on confirmation (see handleToolbeltButton).
+// handleCallTool dispatches a call to a tool the caller may use. Destructive
+// tools are not run here: a Confirm/Cancel prompt is sent and execution happens
+// on admin confirmation (see handleToolbeltButton).
 func handleCallTool(s *discordgo.Session, userID, channelID, guildID string, args map[string]any) string {
 	name := getStr(args, "name")
 	if name == "" {
@@ -152,13 +186,10 @@ func handleCallTool(s *discordgo.Session, userID, channelID, guildID string, arg
 		toolArgs = map[string]any{}
 	}
 
-	t := lookupTool(name)
+	isAdmin := authorizeSSH(s, guildID, userID)
+	t := resolveAccessibleTool(userID, isAdmin, name)
 	if t == nil {
-		return jsonResult("error", fmt.Sprintf("unknown tool %q; use find_tools to list available tools", name))
-	}
-
-	if t.AdminOnly && !authorizeSSH(s, guildID, userID) {
-		return jsonResult("error", "You are not authorized to use this tool (admin only).")
+		return jsonResult("error", fmt.Sprintf("no tool named %q is available to you; use find_tools to list what you can use", name))
 	}
 
 	if t.Destructive {
@@ -290,8 +321,8 @@ func sshResult(resp string, err error) (string, error) {
 	return jsonResult("success", resp), nil
 }
 
-// registerSSHTools moves the SSH tools behind the toolbelt. They are admin-only
-// (as before) but not flagged destructive, preserving their existing UX.
+// registerSSHTools registers the SSH tools as local, admin-visible toolbelt tools
+// (owner-less, visibility "admins"), preserving their existing admin-only UX.
 func registerSSHTools() {
 	invokers := map[string]func(userID, guildID string, a map[string]any) (string, error){
 		"generate_ssh_key":     func(u, g string, a map[string]any) (string, error) { return sshResult(GenerateSSHKeyCore(getBool(a, "regenerate"))) },
@@ -311,7 +342,8 @@ func registerSSHTools() {
 			Name:        def.Function.Name,
 			Description: def.Function.Description,
 			InputSchema: def.Function.Parameters,
-			AdminOnly:   true,
+			Source:      "local",
+			Visibility:  pb.MCPVisibilityAdmins,
 			Invoke: func(ctx context.Context, userID, channelID, guildID string, args map[string]any) (string, error) {
 				return fn(userID, guildID, args)
 			},

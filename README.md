@@ -46,14 +46,17 @@ Get an API key from your Regolo.ai account and set it via `REGOLO_API_KEY`.
 
 Beyond the built-in reminder tools, the bot exposes a **toolbelt**: the model sees two meta-tools (`find_tools` and `call_tool`) and reaches everything else through them, so the per-request tool list stays small no matter how many tools are registered. SSH management is registered locally; remote tools come from **MCP servers**.
 
-MCP servers are managed from Discord with the admin-only **`/mcp`** command:
+MCP servers are **per admin**: each admin adds their own servers (with their own token), and the toolbelt is scoped per user — you see and call only the tools of servers you own, plus any that others have shared. Because each server carries its owner's URL and token, three admins each running their own backup server (e.g. baki) each get their own tools against their own infrastructure.
 
-- `/mcp add name:<name> url:<url> [token:<token>] [admin_only:<true|false>]` — add and connect a server (`url` is a Streamable-HTTP MCP endpoint; `token` is an optional bearer token; `admin_only` defaults to `true` — set `false` to let non-admins use the server's tools)
-- `/mcp remove name:<name>` — disconnect a server and remove its tools
-- `/mcp list` — show configured servers and their connection status / tool counts
+Managed from Discord with the admin-only **`/mcp`** command:
+
+- `/mcp add name:<name> url:<url> [token:<token>] [visibility:<private|admins|public>]` — add and connect a server you own (`url` is a Streamable-HTTP MCP endpoint; `token` is an optional bearer token; `visibility` defaults to `private` — `admins` shares with other admins, `public` with everyone; shared calls run with the owner's token)
+- `/mcp access name:<name> visibility:<private|admins|public>` — change who can use one of your servers' tools
+- `/mcp remove name:<name>` — disconnect one of your servers and remove its tools
+- `/mcp list` — show the servers available to you and their status
 - `/mcp reload` — re-sync immediately
 
-Configuration is stored in the PocketBase **`mcp_servers`** collection (also editable via the admin UI at `/_/` if preferred). The bot connects to each enabled server, registers its tools into the toolbelt, and re-syncs periodically — so changes take effect without a restart. Tools flagged **destructive** by the server require an admin to approve a Confirm/Cancel button before they run.
+Configuration is stored in the PocketBase **`mcp_servers`** collection (also editable via the admin UI at `/_/`). The bot connects to each enabled server, registers its tools into the toolbelt tagged with owner and visibility, and re-syncs periodically — so changes take effect without a restart. Tools flagged **destructive** by the server require an admin to approve a Confirm/Cancel button before they run.
 
 For convenience, `BAKI_MCP_URL` / `BAKI_MCP_TOKEN` (if set) are seeded once into `mcp_servers` on startup; after that, the collection is the source of truth.
 
