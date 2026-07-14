@@ -94,6 +94,13 @@ func ensureCollectionsExist() error {
 		return fmt.Errorf("failed to ensure servers collection: %v", err)
 	}
 
+	// Ensure mcp_servers collection exists. This is optional (MCP integration) and
+	// must never prevent startup: if it fails, log and continue so the bot stays up
+	// with the rest of its functionality rather than dying on boot.
+	if err := ensureMCPServersCollection(); err != nil {
+		log.Warn("Could not ensure mcp_servers collection; MCP integration disabled for now", "error", err)
+	}
+
 	return nil
 }
 
@@ -217,6 +224,102 @@ func ensureServersCollection() error {
 
 	log.Info("Created servers collection successfully")
 	return nil
+}
+
+// MCPServer describes a remote MCP server whose tools are exposed through the
+// bot's toolbelt.
+type MCPServer struct {
+	ID      string
+	Name    string
+	URL     string
+	Token   string
+	Enabled bool
+}
+
+const mcpServersCollection = "mcp_servers"
+
+// ensureMCPServersCollection creates the mcp_servers collection if it doesn't exist.
+func ensureMCPServersCollection() error {
+	currentApp := GetApp()
+
+	if _, err := currentApp.FindCollectionByNameOrId(mcpServersCollection); err == nil {
+		log.Info("mcp_servers collection already exists")
+		return nil
+	}
+
+	log.Info("Creating mcp_servers collection...")
+	collection := core.NewBaseCollection(mcpServersCollection, mcpServersCollection)
+	collection.Fields.Add(&core.TextField{Name: "name", Required: true})
+	collection.Fields.Add(&core.TextField{Name: "url", Required: true})
+	collection.Fields.Add(&core.TextField{Name: "token", Required: false})
+	collection.Fields.Add(&core.BoolField{Name: "enabled", Required: false})
+
+	if err := currentApp.Save(collection); err != nil {
+		return fmt.Errorf("failed to create mcp_servers collection: %v", err)
+	}
+	log.Info("Created mcp_servers collection successfully")
+	return nil
+}
+
+// ListMCPServers returns all configured MCP servers.
+func ListMCPServers() ([]*MCPServer, error) {
+	currentApp := GetApp()
+	records, err := currentApp.FindAllRecords(mcpServersCollection)
+	if err != nil {
+		if isNotFound(err) {
+			return []*MCPServer{}, nil
+		}
+		log.Error("Error listing MCP servers", "error", err)
+		return nil, err
+	}
+	servers := make([]*MCPServer, 0, len(records))
+	for _, r := range records {
+		servers = append(servers, &MCPServer{
+			ID:      r.Id,
+			Name:    r.GetString("name"),
+			URL:     r.GetString("url"),
+			Token:   r.GetString("token"),
+			Enabled: r.GetBool("enabled"),
+		})
+	}
+	return servers, nil
+}
+
+// AddMCPServer inserts a new MCP server (enabled) if one with the same URL does
+// not already exist. Returns whether a record was created.
+func AddMCPServer(name, url, token string) (bool, error) {
+	currentApp := GetApp()
+
+	if existing, _ := currentApp.FindFirstRecordByFilter(mcpServersCollection, "url = {:url}", dbx.Params{"url": url}); existing != nil {
+		return false, nil
+	}
+
+	collection, err := currentApp.FindCollectionByNameOrId(mcpServersCollection)
+	if err != nil {
+		return false, err
+	}
+	record := core.NewRecord(collection)
+	record.Set("name", name)
+	record.Set("url", url)
+	record.Set("token", token)
+	record.Set("enabled", true)
+	if err := currentApp.Save(record); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// RemoveMCPServer deletes the MCP server with the given name. Not-found is a no-op.
+func RemoveMCPServer(name string) error {
+	currentApp := GetApp()
+	record, err := currentApp.FindFirstRecordByFilter(mcpServersCollection, "name = {:name}", dbx.Params{"name": name})
+	if err != nil {
+		if isNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	return currentApp.Delete(record)
 }
 
 // GetApp is a helper to ensure pbApp is initialized.

@@ -31,7 +31,7 @@ Do NOT remove spaces between words in time expressions. Always use the exact for
 
 If a user requests a reminder for a specific date/time and it is not supported, offer to set a reminder for the equivalent duration instead (e.g., "Would you like me to set a reminder for 'in 24 hours' instead?").
 
-You also have the capability to manage SSH connections and execute commands on remote servers using the SSH tools provided. To execute commands, you must first connect to a server. You can also generate and show SSH keys. Note that only authorized users (admins) can use SSH tools. If an SSH tool fails due to lack of authorization, politely inform the user.
+Beyond reminders, you have a toolbelt of extended tools (SSH management, backups, and other integrations) reached through two tools: call "find_tools" to discover what is available (optionally with a query) and read each tool's input schema, then "call_tool" with the exact tool name and an arguments object to run it. Always find_tools before calling an unfamiliar tool so you use the right name and arguments. Some tools are admin-only, and destructive tools require the user to approve a confirmation button before they run — when a destructive call returns a "pending" status, tell the user you have requested confirmation and do not retry. If a tool reports it is not authorized, politely inform the user.
 
 A tool result is returned as JSON with a "status" field ("success" or "error") and a "message" field. If status is "error", immediately reply to the user with the message and do not call the tool again unless the user asks for another attempt.
 
@@ -465,7 +465,9 @@ func chatbot(session *discordgo.Session, userID string, channelID string, guildI
 	_ = session.ChannelTyping(channelID)
 
 	// Combine tools
-	allTools := append(ReminderTools, SSHTools...)
+	// Reminders stay as direct top-level tools; everything else (SSH, remote MCP
+	// tools) is reached through the toolbelt so the per-request tool list stays small.
+	allTools := append(append([]Tool{}, ReminderTools...), ToolbeltTools...)
 
 	// Robust function call handling loop with a bounded number of tool rounds so
 	// a model that keeps emitting tool_calls cannot spin forever (unbounded API

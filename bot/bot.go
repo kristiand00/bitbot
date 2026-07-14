@@ -2,7 +2,7 @@ package bot
 
 import (
 	"bitbot/pb" // PocketBase interaction
-	// For PCM to byte conversion
+	"context"
 	"fmt"
 	"math/rand"
 	"os" // Restoring os import
@@ -121,6 +121,32 @@ var (
 				},
 			},
 		},
+		{
+			Name:        "mcp",
+			Description: "Manage MCP tool servers (admin only).",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Name:        "add",
+					Description: "Add and connect an MCP server.",
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Options: []*discordgo.ApplicationCommandOption{
+						{Type: discordgo.ApplicationCommandOptionString, Name: "name", Description: "Unique name for the server.", Required: true},
+						{Type: discordgo.ApplicationCommandOptionString, Name: "url", Description: "Streamable-HTTP MCP endpoint URL.", Required: true},
+						{Type: discordgo.ApplicationCommandOptionString, Name: "token", Description: "Optional bearer token.", Required: false},
+					},
+				},
+				{
+					Name:        "remove",
+					Description: "Remove an MCP server and its tools.",
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Options: []*discordgo.ApplicationCommandOption{
+						{Type: discordgo.ApplicationCommandOptionString, Name: "name", Description: "Name of the server to remove.", Required: true},
+					},
+				},
+				{Name: "list", Description: "List configured MCP servers and their status.", Type: discordgo.ApplicationCommandOptionSubCommand},
+				{Name: "reload", Description: "Re-sync MCP servers from the database now.", Type: discordgo.ApplicationCommandOptionSubCommand},
+			},
+		},
 	}
 	// registeredCommands is a map to keep track of registered commands and avoid re-registering.
 	// This might be useful if registerCommands is called multiple times, though typically it's once at startup.
@@ -157,6 +183,11 @@ func Run() {
 		log.Fatalf("Failed to initialize Regolo Client: %v", err)
 	}
 	log.Info("Regolo Client initialized successfully.")
+
+	// Register extended tools behind the toolbelt: SSH tools locally, plus any
+	// tools exposed by a configured remote MCP server (non-fatal if unreachable).
+	registerSSHTools()
+	InitMCP(context.Background())
 
 	discord.AddHandler(commandHandler)
 	discord.AddHandler(newMessage)
@@ -409,12 +440,16 @@ func commandHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 					"/ssh - Connect to a remote server via SSH.\n" +
 					"/exe - Execute a command on the remote server.\n" +
 					"/exit - Close the SSH connection.\n" +
-					"/list - List saved servers.\n"
+					"/list - List saved servers.\n" +
+					"/mcp add|remove|list|reload - Manage MCP tool servers.\n"
 			}
 			respondWithMessage(s, i, helpMessage)
 
 		case "remind":
 			HandleRemindCommand(s, i)
+
+		case "mcp":
+			HandleMCPCommand(s, i)
 		}
 	} else if i.Type == discordgo.InteractionModalSubmit {
 		modalHandler(s, i)

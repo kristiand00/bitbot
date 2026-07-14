@@ -42,6 +42,21 @@ BitBot calls Regolo's OpenAI-compatible chat completions endpoint at `https://ap
 
 Get an API key from your Regolo.ai account and set it via `REGOLO_API_KEY`.
 
+## Extended tools (toolbelt & MCP)
+
+Beyond the built-in reminder tools, the bot exposes a **toolbelt**: the model sees two meta-tools (`find_tools` and `call_tool`) and reaches everything else through them, so the per-request tool list stays small no matter how many tools are registered. SSH management is registered locally; remote tools come from **MCP servers**.
+
+MCP servers are managed from Discord with the admin-only **`/mcp`** command:
+
+- `/mcp add name:<name> url:<url> [token:<token>]` — add and connect a server (`url` is a Streamable-HTTP MCP endpoint; `token` is an optional bearer token)
+- `/mcp remove name:<name>` — disconnect a server and remove its tools
+- `/mcp list` — show configured servers and their connection status / tool counts
+- `/mcp reload` — re-sync immediately
+
+Configuration is stored in the PocketBase **`mcp_servers`** collection (also editable via the admin UI at `/_/` if preferred). The bot connects to each enabled server, registers its tools into the toolbelt, and re-syncs periodically — so changes take effect without a restart. Tools flagged **destructive** by the server require an admin to approve a Confirm/Cancel button before they run.
+
+For convenience, `BAKI_MCP_URL` / `BAKI_MCP_TOKEN` (if set) are seeded once into `mcp_servers` on startup; after that, the collection is the source of truth.
+
 ## Configuration
 
 Configuration is read from environment variables (loaded from a `.env` file in non-production environments). Copy `.env_example` to `.env` and fill in the values:

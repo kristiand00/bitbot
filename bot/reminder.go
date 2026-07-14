@@ -862,6 +862,10 @@ func CalculateNextRecurrence(originalReminderTime time.Time, rule string, lastTr
 // ButtonHandler handles reminder delete button interactions.
 func ButtonHandler(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if i.Type == discordgo.InteractionMessageComponent {
+		// Toolbelt destructive-action confirmations are handled first.
+		if handleToolbeltButton(s, i) {
+			return
+		}
 		customID := i.MessageComponentData().CustomID
 		if strings.HasPrefix(customID, "reminder_delete_") {
 			reminderID := strings.TrimPrefix(customID, "reminder_delete_")

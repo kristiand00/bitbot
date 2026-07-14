@@ -221,68 +221,12 @@ func HandleFunctionCallWithContext(s *discordgo.Session, i *discordgo.Interactio
 			return jsonResult("error", resp), nil
 		}
 		return jsonResult("success", resp), nil
-	case "generate_ssh_key":
-		if !authorizeSSH(s, guildID, userID) {
-			return jsonResult("error", "You are not authorized to use SSH commands."), nil
-		}
-		regenerate, _ := args["regenerate"].(bool)
-		resp, err := GenerateSSHKeyCore(regenerate)
-		if err != nil {
-			return jsonResult("error", resp), nil
-		}
-		return jsonResult("success", resp), nil
 
-	case "show_ssh_public_key":
-		if !authorizeSSH(s, guildID, userID) {
-			return jsonResult("error", "You are not authorized to use SSH commands."), nil
-		}
-		resp, err := ShowSSHPublicKeyCore()
-		if err != nil {
-			return jsonResult("error", resp), nil
-		}
-		return jsonResult("success", resp), nil
+	case "find_tools":
+		return handleFindTools(args), nil
 
-	case "connect_ssh_server":
-		if !authorizeSSH(s, guildID, userID) {
-			return jsonResult("error", "You are not authorized to use SSH commands."), nil
-		}
-		connectionDetails, _ := args["connection_details"].(string)
-		resp, err := ConnectSSHServerCore(userID, guildID, connectionDetails)
-		if err != nil {
-			return jsonResult("error", resp), nil
-		}
-		return jsonResult("success", resp), nil
-
-	case "execute_ssh_command":
-		if !authorizeSSH(s, guildID, userID) {
-			return jsonResult("error", "You are not authorized to use SSH commands."), nil
-		}
-		command, _ := args["command"].(string)
-		resp, err := ExecuteSSHCommandCore(userID, guildID, command)
-		if err != nil {
-			return jsonResult("error", resp), nil
-		}
-		return jsonResult("success", resp), nil
-
-	case "close_ssh_connection":
-		if !authorizeSSH(s, guildID, userID) {
-			return jsonResult("error", "You are not authorized to use SSH commands."), nil
-		}
-		resp, err := CloseSSHConnectionCore(userID, guildID)
-		if err != nil {
-			return jsonResult("error", resp), nil
-		}
-		return jsonResult("success", resp), nil
-
-	case "list_ssh_servers":
-		if !authorizeSSH(s, guildID, userID) {
-			return jsonResult("error", "You are not authorized to use SSH commands."), nil
-		}
-		resp, err := ListSSHServersCore(userID, guildID)
-		if err != nil {
-			return jsonResult("error", resp), nil
-		}
-		return jsonResult("success", resp), nil
+	case "call_tool":
+		return handleCallTool(s, userID, channelID, guildID, args), nil
 
 	default:
 		return "", fmt.Errorf("unknown function call: %s", name)
