@@ -35,17 +35,26 @@ type UserToken struct {
 }
 
 // GetUserToken returns the stored token for a (user, server), or nil if none.
+// Access and refresh tokens are decrypted with TOKEN_ENCRYPTION_KEY.
 func GetUserToken(userID, server string) (*UserToken, error) {
 	record, err := findUserToken(userID, server)
 	if err != nil || record == nil {
+		return nil, err
+	}
+	access, err := decryptSecret(record.GetString("access_token"))
+	if err != nil {
+		return nil, err
+	}
+	refresh, err := decryptSecret(record.GetString("refresh_token"))
+	if err != nil {
 		return nil, err
 	}
 	expiry, _ := time.Parse(time.RFC3339, record.GetString("expiry"))
 	return &UserToken{
 		UserID:       userID,
 		Server:       server,
-		AccessToken:  record.GetString("access_token"),
-		RefreshToken: record.GetString("refresh_token"),
+		AccessToken:  access,
+		RefreshToken: refresh,
 		TokenType:    record.GetString("token_type"),
 		Expiry:       expiry,
 		Scope:        record.GetString("scope"),
@@ -53,7 +62,17 @@ func GetUserToken(userID, server string) (*UserToken, error) {
 }
 
 // SaveUserToken upserts a per-user token (create or update the existing row).
+// Access and refresh tokens are encrypted at rest with TOKEN_ENCRYPTION_KEY.
 func SaveUserToken(t *UserToken) error {
+	access, err := encryptSecret(t.AccessToken)
+	if err != nil {
+		return err
+	}
+	refresh, err := encryptSecret(t.RefreshToken)
+	if err != nil {
+		return err
+	}
+
 	app := GetApp()
 	record, err := findUserToken(t.UserID, t.Server)
 	if err != nil {
@@ -68,8 +87,8 @@ func SaveUserToken(t *UserToken) error {
 		record.Set("user_id", t.UserID)
 		record.Set("server", t.Server)
 	}
-	record.Set("access_token", t.AccessToken)
-	record.Set("refresh_token", t.RefreshToken)
+	record.Set("access_token", access)
+	record.Set("refresh_token", refresh)
 	record.Set("token_type", t.TokenType)
 	if t.Expiry.IsZero() {
 		record.Set("expiry", "")
