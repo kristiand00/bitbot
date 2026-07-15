@@ -111,6 +111,8 @@ type MCPServer struct {
 	Owner string
 	// Visibility is one of MCPVisibility{Private,Admins,Public}.
 	Visibility string
+	// AuthMode is MCPAuth{Bearer,OAuth}: how the server authenticates.
+	AuthMode string
 }
 
 const mcpServersCollection = "mcp_servers"
@@ -145,6 +147,7 @@ func ListMCPServers() ([]*MCPServer, error) {
 			Enabled:    r.GetBool("enabled"),
 			Owner:      r.GetString("owner"),
 			Visibility: normalizeVisibility(r.GetString("visibility")),
+			AuthMode:   normalizeAuthMode(r.GetString("auth_mode")),
 		})
 	}
 	return servers, nil

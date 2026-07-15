@@ -17,9 +17,10 @@ import (
 // Collection names (kept as literals here to keep this package free of any
 // dependency on the parent pb package).
 const (
-	remindersCollection  = "reminders"
-	serversCollection    = "servers"
-	mcpServersCollection = "mcp_servers"
+	remindersCollection   = "reminders"
+	serversCollection     = "servers"
+	mcpServersCollection  = "mcp_servers"
+	oauthTokensCollection = "oauth_tokens"
 )
 
 // Migration is a single schema/data change.
@@ -75,6 +76,18 @@ var list = []Migration{
 		Optional: true,
 		Needed:   mcpVisibilityBackfillNeeded,
 		Apply:    backfillMCPVisibility,
+	},
+	{
+		Name:     "mcp_add_auth_mode_field",
+		Optional: true,
+		Needed:   fieldMissing(mcpServersCollection, "auth_mode"),
+		Apply:    addTextField(mcpServersCollection, "auth_mode"),
+	},
+	{
+		Name:     "create_oauth_tokens_collection",
+		Optional: true,
+		Needed:   collectionMissing(oauthTokensCollection),
+		Apply:    createOAuthTokensCollection,
 	},
 }
 
@@ -188,6 +201,20 @@ func createMCPServersCollection(app core.App) error {
 	c.Fields.Add(&core.TextField{Name: "url", Required: true})
 	c.Fields.Add(&core.TextField{Name: "token", Required: false})
 	c.Fields.Add(&core.BoolField{Name: "enabled", Required: false})
+	return app.Save(c)
+}
+
+// createOAuthTokensCollection stores per-user OAuth tokens, keyed by
+// (user_id, server), for MCP servers that authenticate each user individually.
+func createOAuthTokensCollection(app core.App) error {
+	c := core.NewBaseCollection(oauthTokensCollection, oauthTokensCollection)
+	c.Fields.Add(&core.TextField{Name: "user_id", Required: true})
+	c.Fields.Add(&core.TextField{Name: "server", Required: true})
+	c.Fields.Add(&core.TextField{Name: "access_token", Required: false})
+	c.Fields.Add(&core.TextField{Name: "refresh_token", Required: false})
+	c.Fields.Add(&core.TextField{Name: "token_type", Required: false})
+	c.Fields.Add(&core.TextField{Name: "expiry", Required: false})
+	c.Fields.Add(&core.TextField{Name: "scope", Required: false})
 	return app.Save(c)
 }
 
