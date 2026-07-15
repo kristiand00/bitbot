@@ -50,13 +50,16 @@ MCP servers are **per admin**: each admin adds their own servers (with their own
 
 Managed from Discord with the admin-only **`/mcp`** command:
 
-- `/mcp add name:<name> url:<url> [token:<token>] [visibility:<private|admins|public>]` — add and connect a server you own (`url` is a Streamable-HTTP MCP endpoint; `token` is an optional bearer token; `visibility` defaults to `private` — `admins` shares with other admins, `public` with everyone; shared calls run with the owner's token)
+- `/mcp add name:<name> url:<url> [token:<token>] [visibility:<private|admins|public>] [auth_mode:<bearer|oauth>]` — add and connect a server you own (`url` is a Streamable-HTTP MCP endpoint; `token` is an optional bearer token; `visibility` defaults to `private`; `auth_mode` defaults to `bearer`, use `oauth` for per-user login)
+- `/mcp link name:<name>` — authorize and connect one of your OAuth servers (the bot DMs you a login link)
 - `/mcp access name:<name> visibility:<private|admins|public>` — change who can use one of your servers' tools
 - `/mcp remove name:<name>` — disconnect one of your servers and remove its tools
 - `/mcp list` — show the servers available to you and their status
 - `/mcp reload` — re-sync immediately
 
 Configuration is stored in the PocketBase **`mcp_servers`** collection (also editable via the admin UI at `/_/`). The bot connects to each enabled server, registers its tools into the toolbelt tagged with owner and visibility, and re-syncs periodically — so changes take effect without a restart. Tools flagged **destructive** by the server require an admin to approve a Confirm/Cancel button before they run.
+
+**OAuth servers** (`auth_mode: oauth`) authenticate each user individually via OAuth 2.1 (with Dynamic Client Registration, so no per-provider app registration). Run `/mcp link` to authorize: the bot DMs you a login link, and once you approve it in a browser the server connects. This requires `OAUTH_REDIRECT_BASE` (the public base URL the provider redirects back to; the bot serves `/oauth/callback` under it) and `TOKEN_ENCRYPTION_KEY` (tokens are stored encrypted at rest), and the bot must run in `serve-with-bot` mode so the callback endpoint is served.
 
 For convenience, `BAKI_MCP_URL` / `BAKI_MCP_TOKEN` (if set) are seeded once into `mcp_servers` on startup; after that, the collection is the source of truth.
 

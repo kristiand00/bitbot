@@ -138,6 +138,19 @@ var (
 							Description: "Who can use these tools (default: private to you).", Required: false,
 							Choices: mcpVisibilityChoices,
 						},
+						{
+							Type: discordgo.ApplicationCommandOptionString, Name: "auth_mode",
+							Description: "How the server authenticates (default: bearer).", Required: false,
+							Choices: mcpAuthModeChoices,
+						},
+					},
+				},
+				{
+					Name:        "link",
+					Description: "Authorize and connect one of your OAuth MCP servers.",
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Options: []*discordgo.ApplicationCommandOption{
+						{Type: discordgo.ApplicationCommandOptionString, Name: "name", Description: "Name of the OAuth server to link.", Required: true},
 					},
 				},
 				{

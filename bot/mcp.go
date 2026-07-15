@@ -28,6 +28,12 @@ var mcpVisibilityChoices = []*discordgo.ApplicationCommandOptionChoice{
 	{Name: "public (everyone)", Value: pb.MCPVisibilityPublic},
 }
 
+// mcpAuthModeChoices are the selectable auth modes for /mcp add.
+var mcpAuthModeChoices = []*discordgo.ApplicationCommandOptionChoice{
+	{Name: "bearer token", Value: pb.MCPAuthBearer},
+	{Name: "oauth (per-user login)", Value: pb.MCPAuthOAuth},
+}
+
 // serverKey uniquely identifies a server by owner + name, so two admins can each
 // have a server with the same name (e.g. "baki") without colliding.
 func serverKey(owner, name string) string { return owner + "/" + name }
@@ -41,6 +47,7 @@ type mcpConnection struct {
 	url        string
 	token      string
 	visibility string
+	authMode   string
 	session    *mcp.ClientSession
 	toolNames  []string
 }
@@ -69,7 +76,7 @@ func InitMCP(ctx context.Context) {
 	if url := strings.TrimSpace(os.Getenv("BAKI_MCP_URL")); url != "" {
 		// Seed as an owner-less/admin-visible server (legacy-style) so existing
 		// env-based deployments keep working.
-		if created, err := pb.AddMCPServer("baki", url, strings.TrimSpace(os.Getenv("BAKI_MCP_TOKEN")), "", pb.MCPVisibilityAdmins); err != nil {
+		if created, err := pb.AddMCPServer("baki", url, strings.TrimSpace(os.Getenv("BAKI_MCP_TOKEN")), "", pb.MCPVisibilityAdmins, pb.MCPAuthBearer); err != nil {
 			log.Warnf("could not seed MCP server from env: %v", err)
 		} else if created {
 			log.Info("seeded MCP server 'baki' from environment into mcp_servers")
@@ -99,7 +106,9 @@ func syncMCPServers(ctx context.Context) {
 
 	desired := map[string]*pb.MCPServer{}
 	for _, srv := range servers {
-		if srv.Enabled && strings.TrimSpace(srv.URL) != "" {
+		// OAuth servers are connected per-user via /mcp link, not by the startup
+		// reconciler (they have no token until a user authorizes).
+		if srv.Enabled && srv.AuthMode != pb.MCPAuthOAuth && strings.TrimSpace(srv.URL) != "" {
 			desired[serverKey(srv.Owner, srv.Name)] = srv
 		}
 	}
@@ -112,7 +121,11 @@ func syncMCPServers(ctx context.Context) {
 	mcpConnectionsMu.Unlock()
 
 	// Remove connections no longer desired (deleted, disabled, or reconfigured).
+	// OAuth connections are managed by /mcp link, not the reconciler, so leave them.
 	for key, conn := range current {
+		if conn.authMode == pb.MCPAuthOAuth {
+			continue
+		}
 		want, ok := desired[key]
 		if !ok || want.URL != conn.url || want.Token != conn.token || want.Visibility != conn.visibility {
 			disconnectMCPServer(key)
@@ -163,8 +176,16 @@ func connectMCPServer(ctx context.Context, srv *pb.MCPServer) error {
 		return err
 	}
 
+	registerServerTools(srv, session, res)
+	return nil
+}
+
+// registerServerTools registers a connected server's tools into the toolbelt
+// (tagged with owner and visibility) and stores the live connection. Shared by
+// the bearer reconciler path and the OAuth link path.
+func registerServerTools(srv *pb.MCPServer, session *mcp.ClientSession, res *mcp.ListToolsResult) {
 	key := serverKey(srv.Owner, srv.Name)
-	conn := &mcpConnection{key: key, owner: srv.Owner, name: srv.Name, url: srv.URL, token: srv.Token, visibility: srv.Visibility, session: session}
+	conn := &mcpConnection{key: key, owner: srv.Owner, name: srv.Name, url: srv.URL, token: srv.Token, visibility: srv.Visibility, authMode: srv.AuthMode, session: session}
 	for _, tool := range res.Tools {
 		destructive := false
 		if tool.Annotations != nil && tool.Annotations.DestructiveHint != nil {
@@ -192,7 +213,6 @@ func connectMCPServer(ctx context.Context, srv *pb.MCPServer) error {
 	mcpConnectionsMu.Unlock()
 
 	log.Infof("connected MCP server %q owner=%q (%s): registered %d tools", srv.Name, srv.Owner, srv.URL, len(conn.toolNames))
-	return nil
 }
 
 // disconnectMCPServer removes a server's tools from the toolbelt and closes its session.
@@ -244,11 +264,12 @@ func HandleMCPCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	case "add":
 		name, url, token := optStr("name"), optStr("url"), optStr("token")
 		visibility := optStr("visibility") // "" => private
+		authMode := optStr("auth_mode")    // "" => bearer
 		if name == "" || url == "" {
 			respondWithMessage(s, i, "`/mcp add` requires `name` and `url`.")
 			return
 		}
-		created, err := pb.AddMCPServer(name, url, token, caller, visibility)
+		created, err := pb.AddMCPServer(name, url, token, caller, visibility, authMode)
 		if err != nil {
 			respondWithMessage(s, i, "Failed to add MCP server: "+err.Error())
 			return
@@ -257,12 +278,43 @@ func HandleMCPCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 			respondWithMessage(s, i, "You already have a server with that URL.")
 			return
 		}
+		if authMode == pb.MCPAuthOAuth {
+			respondWithMessage(s, i, fmt.Sprintf("Added OAuth MCP server `%s`. Run `/mcp link name:%s` to authorize and connect it.", name, name))
+			return
+		}
 		respondWithMessage(s, i, fmt.Sprintf("Added MCP server `%s` (owner: you). Connecting…", name))
 		channelID := i.ChannelID
 		key := serverKey(caller, name)
 		go func() {
 			syncMCPServers(context.Background())
 			s.ChannelMessageSend(channelID, mcpServerStatusLine(key, name))
+		}()
+
+	case "link":
+		name := optStr("name")
+		if name == "" {
+			respondWithMessage(s, i, "`/mcp link` requires `name`.")
+			return
+		}
+		srv, err := pb.GetMCPServer(name, caller)
+		if err != nil || srv == nil {
+			respondWithMessage(s, i, fmt.Sprintf("No MCP server named `%s` that you can manage.", name))
+			return
+		}
+		if srv.AuthMode != pb.MCPAuthOAuth {
+			respondWithMessage(s, i, fmt.Sprintf("`%s` uses bearer auth, not OAuth — nothing to link.", name))
+			return
+		}
+		respondWithMessage(s, i, "Check your DMs for an authorization link…")
+		channelID := i.ChannelID
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), oauthAuthorizeTimeout+time.Minute)
+			defer cancel()
+			if err := linkOAuthServer(ctx, s, caller, srv); err != nil {
+				s.ChannelMessageSend(channelID, fmt.Sprintf("⚠️ Could not link `%s`: %v", name, err))
+				return
+			}
+			s.ChannelMessageSend(channelID, mcpServerStatusLine(serverKey(srv.Owner, srv.Name), name))
 		}()
 
 	case "remove":

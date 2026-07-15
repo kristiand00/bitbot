@@ -155,8 +155,8 @@ func ListMCPServers() ([]*MCPServer, error) {
 
 // AddMCPServer inserts a new MCP server owned by owner. It is a no-op (returns
 // false) if the same owner already has a server with that URL. Visibility
-// controls who besides the owner may use its tools.
-func AddMCPServer(name, url, token, owner, visibility string) (bool, error) {
+// controls who besides the owner may use its tools; authMode is bearer or oauth.
+func AddMCPServer(name, url, token, owner, visibility, authMode string) (bool, error) {
 	currentApp := GetApp()
 
 	if existing, _ := currentApp.FindFirstRecordByFilter(
@@ -177,10 +177,30 @@ func AddMCPServer(name, url, token, owner, visibility string) (bool, error) {
 	record.Set("enabled", true)
 	record.Set("owner", owner)
 	record.Set("visibility", normalizeVisibility(visibility))
+	record.Set("auth_mode", normalizeAuthMode(authMode))
 	if err := currentApp.Save(record); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// GetMCPServer returns a server by (name, owner-or-legacy) for the given caller,
+// or nil if none matches.
+func GetMCPServer(name, caller string) (*MCPServer, error) {
+	record := findOwnedOrLegacy(name, caller)
+	if record == nil {
+		return nil, nil
+	}
+	return &MCPServer{
+		ID:         record.Id,
+		Name:       record.GetString("name"),
+		URL:        record.GetString("url"),
+		Token:      record.GetString("token"),
+		Enabled:    record.GetBool("enabled"),
+		Owner:      record.GetString("owner"),
+		Visibility: normalizeVisibility(record.GetString("visibility")),
+		AuthMode:   normalizeAuthMode(record.GetString("auth_mode")),
+	}, nil
 }
 
 // findOwnedOrLegacy locates a server by name that the caller may manage: one they

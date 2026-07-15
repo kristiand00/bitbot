@@ -81,6 +81,8 @@ func main() {
 
 		pb.Init()
 		app := pb.GetApp()
+		// Register the OAuth callback route before the server starts.
+		bot.RegisterOAuthRoutes(app)
 		log.Info("PocketBase admin UI will be available at http://0.0.0.0:8090/_/")
 		if err := app.Start(); err != nil {
 			log.Fatal("Failed to start PocketBase server:", err)
