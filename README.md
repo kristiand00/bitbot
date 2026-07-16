@@ -76,6 +76,10 @@ Configuration is read from environment variables (loaded from a `.env` file in n
 | `CRYPTO_TOKEN` | yes | CryptoCompare API key |
 | `REGOLO_MODEL` | no | Regolo model name (defaults to `gpt-oss-120b`) |
 | `ENV` | no | Set to `production` to skip loading `.env` |
+| `BAKI_MCP_URL` | no | Streamable-HTTP MCP endpoint seeded into `mcp_servers` on startup |
+| `BAKI_MCP_TOKEN` | no | Bearer token for `BAKI_MCP_URL` |
+| `TOKEN_ENCRYPTION_KEY` | for OAuth | Passphrase used to encrypt stored OAuth tokens at rest |
+| `OAUTH_REDIRECT_BASE` | for OAuth | Public base URL the OAuth provider redirects back to (the bot serves `/oauth/callback` under it) |
 
 ## Getting started
 
