@@ -61,8 +61,6 @@ Configuration is stored in the PocketBase **`mcp_servers`** collection (also edi
 
 **OAuth servers** (`auth_mode: oauth`) authenticate each user individually via OAuth 2.1 (with Dynamic Client Registration, so no per-provider app registration). Run `/mcp link` to authorize: the bot DMs you a login link, and once you approve it in a browser the server connects. This requires `OAUTH_REDIRECT_BASE` (the public base URL the provider redirects back to; the bot serves `/oauth/callback` under it) and `TOKEN_ENCRYPTION_KEY` (tokens are stored encrypted at rest), and the bot must run in `serve-with-bot` mode so the callback endpoint is served.
 
-For convenience, `BAKI_MCP_URL` / `BAKI_MCP_TOKEN` (if set) are seeded once into `mcp_servers` on startup; after that, the collection is the source of truth.
-
 ## Configuration
 
 Configuration is read from environment variables (loaded from a `.env` file in non-production environments). Copy `.env_example` to `.env` and fill in the values:
@@ -76,8 +74,6 @@ Configuration is read from environment variables (loaded from a `.env` file in n
 | `CRYPTO_TOKEN` | yes | CryptoCompare API key |
 | `REGOLO_MODEL` | no | Regolo model name (defaults to `gpt-oss-120b`) |
 | `ENV` | no | Set to `production` to skip loading `.env` |
-| `BAKI_MCP_URL` | no | Streamable-HTTP MCP endpoint seeded into `mcp_servers` on startup |
-| `BAKI_MCP_TOKEN` | no | Bearer token for `BAKI_MCP_URL` |
 | `TOKEN_ENCRYPTION_KEY` | for OAuth | Passphrase used to encrypt stored OAuth tokens at rest |
 | `OAUTH_REDIRECT_BASE` | for OAuth | Public base URL the OAuth provider redirects back to (the bot serves `/oauth/callback` under it) |
 

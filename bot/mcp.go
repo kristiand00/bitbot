@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -70,19 +69,9 @@ func (b *bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	return b.base.RoundTrip(clone)
 }
 
-// InitMCP seeds an MCP server from env (for migration), performs the first sync
-// against PocketBase, and starts a background reconciler.
+// InitMCP performs the first sync against PocketBase and starts a background
+// reconciler. Servers are managed via the /mcp command, not hardcoded/env-seeded.
 func InitMCP(ctx context.Context) {
-	if url := strings.TrimSpace(os.Getenv("BAKI_MCP_URL")); url != "" {
-		// Seed as an owner-less/admin-visible server (legacy-style) so existing
-		// env-based deployments keep working.
-		if created, err := pb.AddMCPServer("baki", url, strings.TrimSpace(os.Getenv("BAKI_MCP_TOKEN")), "", pb.MCPVisibilityAdmins, pb.MCPAuthBearer); err != nil {
-			log.Warnf("could not seed MCP server from env: %v", err)
-		} else if created {
-			log.Info("seeded MCP server 'baki' from environment into mcp_servers")
-		}
-	}
-
 	syncMCPServers(ctx)
 
 	go func() {
